@@ -44,8 +44,14 @@ dlo::OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle) {
   this->odom.pose.pose.orientation.x = 0.;
   this->odom.pose.pose.orientation.y = 0.;
   this->odom.pose.pose.orientation.z = 0.;
-  this->odom.pose.covariance = {0.};
-
+  this->odom.pose.covariance = {
+      0.01, 0.0, 0.0, 0.0, 0.0, 0.0,  // Covariance for x position and correlations
+      0.0, 0.01, 0.0, 0.0, 0.0, 0.0,  // Covariance for y position and correlations
+      0.0, 0.0, 0.01, 0.0, 0.0, 0.0,  // Covariance for z position and correlations
+      0.0, 0.0, 0.0, 0.01, 0.0, 0.0,  // Covariance for rotation around x and correlations
+      0.0, 0.0, 0.0, 0.0, 0.01, 0.0,  // Covariance for rotation around y and correlations
+      0.0, 0.0, 0.0, 0.0, 0.0, 0.01   // Covariance for rotation around z
+  };
   this->origin = Eigen::Vector3f(0., 0., 0.);
 
   this->T = Eigen::Matrix4f::Identity();
@@ -198,8 +204,8 @@ void dlo::OdomNode::getParams() {
   ns.erase(0,1);
 
   // Concatenate Frame Name Strings
-  this->odom_frame = ns + "/" + this->odom_frame;
-  this->child_frame = ns + "/" + this->child_frame;
+  //this->odom_frame = ns + "/" + this->odom_frame;
+  //this->child_frame = ns + "/" + this->child_frame;
 
   // Gravity alignment
   ros::param::param<bool>("~dlo/gravityAlign", this->gravity_align_, false);

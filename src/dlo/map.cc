@@ -62,7 +62,7 @@ void dlo::MapNode::getParams() {
   ns.erase(0,1);
 
   // Concatenate Frame Name Strings
-  this->odom_frame = ns + "/" + this->odom_frame;
+  //this->odom_frame = ns + "/" + this->odom_frame;
 
 }
 
