@@ -45,12 +45,12 @@ dlo::OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle) {
   this->odom.pose.pose.orientation.y = 0.;
   this->odom.pose.pose.orientation.z = 0.;
   this->odom.pose.covariance = {
-      0.01, 0.0, 0.0, 0.0, 0.0, 0.0,  // Covariance for x position and correlations
-      0.0, 0.01, 0.0, 0.0, 0.0, 0.0,  // Covariance for y position and correlations
-      0.0, 0.0, 0.01, 0.0, 0.0, 0.0,  // Covariance for z position and correlations
-      0.0, 0.0, 0.0, 0.01, 0.0, 0.0,  // Covariance for rotation around x and correlations
-      0.0, 0.0, 0.0, 0.0, 0.01, 0.0,  // Covariance for rotation around y and correlations
-      0.0, 0.0, 0.0, 0.0, 0.0, 0.01   // Covariance for rotation around z
+      0.1, 0.0, 0.0, 0.0, 0.0, 0.0,  // Covariance for x position and correlations
+      0.0, 0.1, 0.0, 0.0, 0.0, 0.0,  // Covariance for y position and correlations
+      0.0, 0.0, 0.1, 0.0, 0.0, 0.0,  // Covariance for z position and correlations
+      0.0, 0.0, 0.0, 0.05, 0.0, 0.0,  // Covariance for rotation around x and correlations
+      0.0, 0.0, 0.0, 0.0, 0.05, 0.0,  // Covariance for rotation around y and correlations
+      0.0, 0.0, 0.0, 0.0, 0.0, 0.05   // Covariance for rotation around z
   };
   this->origin = Eigen::Vector3f(0., 0., 0.);
 
@@ -207,6 +207,7 @@ void dlo::OdomNode::getParams() {
   //this->odom_frame = ns + "/" + this->odom_frame;
   //this->child_frame = ns + "/" + this->child_frame;
 
+  ros::param::param<bool>("~dlo/odomNode/publishTF", this->publish_tf_, false);
   // Gravity alignment
   ros::param::param<bool>("~dlo/gravityAlign", this->gravity_align_, false);
 
@@ -332,7 +333,10 @@ void dlo::OdomNode::abortTimerCB(const ros::TimerEvent& e) {
 
 void dlo::OdomNode::publishToROS() {
   this->publishPose();
-  this->publishTransform();
+  if(this->publish_tf_ == true)
+  {
+    this->publishTransform();
+  }
 }
 
 

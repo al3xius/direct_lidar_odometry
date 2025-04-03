@@ -222,6 +222,7 @@ private:
 
   bool vf_submap_use_;
   double vf_submap_res_;
+  bool publish_tf_;
 
   bool adaptive_params_use_;
 
