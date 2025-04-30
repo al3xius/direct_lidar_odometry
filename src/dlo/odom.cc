@@ -60,13 +60,6 @@ dlo::OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle) {
 
   this->imu_SE3 = Eigen::Matrix4f::Identity();
 
-  this->imu_bias.gyro.x = 0.;
-  this->imu_bias.gyro.y = 0.;
-  this->imu_bias.gyro.z = 0.;
-  this->imu_bias.accel.x = 0.;
-  this->imu_bias.accel.y = 0.;
-  this->imu_bias.accel.z = 0.;
-
   this->imu_meas.stamp = 0.;
   this->imu_meas.ang_vel.x = 0.;
   this->imu_meas.ang_vel.y = 0.;
@@ -244,6 +237,14 @@ void dlo::OdomNode::getParams() {
   ros::param::param<bool>("~dlo/imu", this->imu_use_, false);
   ros::param::param<int>("~dlo/odomNode/imu/calibTime", this->imu_calib_time_, 3);
   ros::param::param<int>("~dlo/odomNode/imu/bufferSize", this->imu_buffer_size_, 2000);
+
+  ros::param::param<double>("~dlo/odomNode/imu/bias/accel/x", this->imu_bias.accel.x, 0);
+  ros::param::param<double>("~dlo/odomNode/imu/bias/accel/y", this->imu_bias.accel.y, 0);
+  ros::param::param<double>("~dlo/odomNode/imu/bias/accel/z", this->imu_bias.accel.z, 0);
+
+  ros::param::param<double>("~dlo/odomNode/imu/bias/gyro/x", this->imu_bias.gyro.x, 0);
+  ros::param::param<double>("~dlo/odomNode/imu/bias/gyro/x", this->imu_bias.gyro.y, 0);
+  ros::param::param<double>("~dlo/odomNode/imu/bias/gyro/x", this->imu_bias.gyro.z, 0);
 
   // GICP
   ros::param::param<int>("~dlo/odomNode/gicp/minNumPoints", this->gicp_min_num_points_, 100);
@@ -728,7 +729,7 @@ void dlo::OdomNode::imuCB(const sensor_msgs::Imu::ConstPtr& imu) {
   }
 
   // IMU calibration procedure - do for three seconds
-  if (!this->imu_calibrated) {
+  if (!this->imu_calibrated && this->imu_calib_time_ > 0.1) {
 
     static int num_samples = 0;
     static bool print = true;

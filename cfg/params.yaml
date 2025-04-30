@@ -10,7 +10,6 @@
 dlo:
 
   odomNode:
-
     initialPose:
       use: false
       position:
