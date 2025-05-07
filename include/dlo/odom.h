@@ -69,6 +69,8 @@ private:
 
   ros::NodeHandle nh;
   ros::Timer abort_timer;
+  tf2_ros::Buffer tf_buffer;
+  tf2_ros::TransformListener tf_listener;
   
   ros::ServiceServer save_traj_srv;
 
@@ -79,6 +81,8 @@ private:
   ros::Publisher pose_pub;
   ros::Publisher keyframe_pub;
   ros::Publisher kf_pub;
+  ros::Publisher imu_pub;
+  ros::Publisher gravity_pub; // Publisher for averaged gravity vector (now PoseStamped)
 
   Eigen::Vector3f origin;
   std::vector<std::pair<Eigen::Vector3f, Eigen::Quaternionf>> trajectory;
@@ -246,5 +250,9 @@ private:
   double gicps2m_euclidean_fitness_ep_;
   int gicps2m_ransac_iter_;
   double gicps2m_ransac_inlier_thresh_;
+
+  // Gravity alignment rolling average
+  Eigen::Vector3f gravity_avg;
+  int gravity_avg_count;
 
 };

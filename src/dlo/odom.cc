@@ -8,6 +8,9 @@
  ***********************************************************/
 
 #include "dlo/odom.h"
+#include <Eigen/Eigen>
+#include <Eigen/Geometry>
+
 
 std::atomic<bool> dlo::OdomNode::abort_(false);
 
@@ -16,7 +19,7 @@ std::atomic<bool> dlo::OdomNode::abort_(false);
  * Constructor
  **/
 
-dlo::OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle) {
+dlo::OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle), tf_listener(tf_buffer) {
 
   this->getParams();
 
@@ -35,6 +38,8 @@ dlo::OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle) {
   this->pose_pub = this->nh.advertise<geometry_msgs::PoseStamped>("pose", 1);
   this->kf_pub = this->nh.advertise<nav_msgs::Odometry>("kfs", 1, true);
   this->keyframe_pub = this->nh.advertise<sensor_msgs::PointCloud2>("keyframe", 1, true);
+  this->imu_pub = this->nh.advertise<sensor_msgs::Imu>("imu/data", 1);
+  this->gravity_pub = this->nh.advertise<geometry_msgs::PoseStamped>("gravity_vector", 1); // Advertise gravity vector as PoseStamped
   this->save_traj_srv = this->nh.advertiseService("save_traj", &dlo::OdomNode::saveTrajectory, this);
 
   this->odom.pose.pose.position.x = 0.;
@@ -121,6 +126,10 @@ dlo::OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle) {
   this->vf_submap.setLeafSize(this->vf_submap_res_, this->vf_submap_res_, this->vf_submap_res_);
 
   this->metrics.spaciousness.push_back(0.);
+
+  // Rolling average for gravity vector
+  this->gravity_avg = Eigen::Vector3f(0., 0., 0.);
+  this->gravity_avg_count = 0;
 
   // CPU Specs
   char CPUBrandString[0x40];
@@ -398,13 +407,27 @@ void dlo::OdomNode::publishTransform() {
   transformStamped.transform.translation.y = this->pose[1];
   transformStamped.transform.translation.z = this->pose[2];
 
-  transformStamped.transform.rotation.w = this->rotq.w();
-  transformStamped.transform.rotation.x = this->rotq.x();
-  transformStamped.transform.rotation.y = this->rotq.y();
-  transformStamped.transform.rotation.z = this->rotq.z();
+  // Default: use estimated orientation
+  Eigen::Quaternionf q_out = this->rotq;
+
+  // align the transform to the gravity vector if enabled
+  if (this->gravity_align_ && false) {
+    // Compute correction quaternion to align current Z axis to gravity
+    Eigen::Vector3f z_axis = q_out * Eigen::Vector3f(0, 0, 1);
+    Eigen::Vector3f grav_dir = this->gravity_avg.normalized();
+    if (grav_dir.norm() > 1e-6) {
+      Eigen::Quaternionf q_correction = Eigen::Quaternionf::FromTwoVectors(z_axis, grav_dir);
+      q_out = q_correction * q_out;
+      q_out.normalize();
+    }
+  }
+
+  transformStamped.transform.rotation.w = q_out.w();
+  transformStamped.transform.rotation.x = q_out.x();
+  transformStamped.transform.rotation.y = q_out.y();
+  transformStamped.transform.rotation.z = q_out.z();
 
   br.sendTransform(transformStamped);
-
 }
 
 
@@ -540,32 +563,28 @@ void dlo::OdomNode::setInputSources(){
 
 void dlo::OdomNode::gravityAlign() {
 
-  // get average acceleration vector for 1 second and normalize
-  Eigen::Vector3f lin_accel = Eigen::Vector3f::Zero();
-  const double then = ros::Time::now().toSec();
-  int n=0;
-  while ((ros::Time::now().toSec() - then) < 1.) {
-    lin_accel[0] += this->imu_meas.lin_accel.x;
-    lin_accel[1] += this->imu_meas.lin_accel.y;
-    lin_accel[2] += this->imu_meas.lin_accel.z;
-    ++n;
-  }
-  lin_accel[0] /= n; lin_accel[1] /= n; lin_accel[2] /= n;
+  // Use rolling average gravity vector and transform it to the world frame
+  Eigen::Vector3f lin_accel = this->gravity_avg;
 
+  std::cout << "Gravity Align: " << std::endl;
+  
   // normalize
-  double lin_norm = sqrt(pow(lin_accel[0], 2) + pow(lin_accel[1], 2) + pow(lin_accel[2], 2));
-  lin_accel[0] /= lin_norm; lin_accel[1] /= lin_norm; lin_accel[2] /= lin_norm;
+  double lin_norm = lin_accel.norm();
+  if (lin_norm < 1e-6) return; // avoid division by zero
+  lin_accel /= lin_norm;
+  
+  std::cout << "  Gravity Vector: " << lin_accel.transpose() << std::endl;
 
-  // define gravity vector (assume point downwards)
-  Eigen::Vector3f grav;
-  grav << 0, 0, 1;
+  // define gravity vector (point downwards in Z-axis)
+  Eigen::Vector3f grav(0, 0, 1);
 
-  // calculate angle between the two vectors
+  // calculate quaternion rotating measured gravity to align with the defined gravity vector
   Eigen::Quaternionf grav_q = Eigen::Quaternionf::FromTwoVectors(lin_accel, grav);
 
+  std::cout << "  Gravity Quaternion: " << grav_q.coeffs().transpose() << std::endl;
+
   // normalize
-  double grav_norm = sqrt(grav_q.w()*grav_q.w() + grav_q.x()*grav_q.x() + grav_q.y()*grav_q.y() + grav_q.z()*grav_q.z());
-  grav_q.w() /= grav_norm; grav_q.x() /= grav_norm; grav_q.y() /= grav_norm; grav_q.z() /= grav_norm;
+  grav_q.normalize();
 
   // set gravity aligned orientation
   this->rotq = grav_q;
@@ -579,9 +598,15 @@ void dlo::OdomNode::gravityAlign() {
   double pitch = euler[1] * (180.0/M_PI);
   double roll = euler[2] * (180.0/M_PI);
 
-  std::cout << "done" << std::endl;
-  std::cout << "  Roll [deg]: " << roll << std::endl;
-  std::cout << "  Pitch [deg]: " << pitch << std::endl << std::endl;
+  std::cout << "done gravity align" << std::endl;
+  std::cout << "Gravity Align: " << std::endl;
+  std::cout << "  Gravity Vector: " << lin_accel.transpose() << std::endl;
+  std::cout << "  Gravity Quaternion: " << grav_q.coeffs().transpose() << std::endl;
+  std::cout << "  Gravity Yaw [deg]: " << yaw << std::endl;
+  std::cout << "  Gravity Roll [deg]: " << roll << std::endl;
+  std::cout << "  Gravity Pitch [deg]: " << pitch << std::endl;
+  std::cout << "  Gravity Norm: " << lin_norm << std::endl;
+  std::cout << "  Gravity samples: " << this->gravity_avg_count << std::endl;
 }
 
 
@@ -598,6 +623,7 @@ void dlo::OdomNode::initializeDLO() {
 
   // Gravity Align
   if (this->gravity_align_ && this->imu_use_ && this->imu_calibrated && !this->initial_pose_use_) {
+    if (this->gravity_avg_count < 500) return;
     std::cout << "Aligning to gravity... "; std::cout.flush();
     this->gravityAlign();
   }
@@ -624,7 +650,6 @@ void dlo::OdomNode::initializeDLO() {
 
   this->dlo_initialized = true;
   std::cout << "DLO initialized! Starting localization..." << std::endl;
-
 }
 
 
@@ -697,44 +722,147 @@ void dlo::OdomNode::icpCB(const sensor_msgs::PointCloud2ConstPtr& pc) {
   this->publish_thread.detach();
 
   // Debug statements and publish custom DLO message
-  this->debug_thread = std::thread( &dlo::OdomNode::debug, this );
-  this->debug_thread.detach();
+  // this->debug_thread = std::thread( &dlo::OdomNode::debug, this );
+  // this->debug_thread.detach();
 
 }
-
 
 /**
  * IMU Callback
  **/
 
 void dlo::OdomNode::imuCB(const sensor_msgs::Imu::ConstPtr& imu) {
+  // Notes:
+  // - Accel bias is never used
+  // - Gyro is used in IMU integration
+  // - Acceleration only used for gravity alignment
+
 
   if (!this->imu_use_) {
     return;
   }
 
+  // transform IMU data to local frame
+  sensor_msgs::Imu imu_in = *imu;
+  sensor_msgs::Imu imu_out;
+  try {
+    geometry_msgs::TransformStamped t_in = this->tf_buffer.lookupTransform(this->child_frame, imu->header.frame_id, ros::Time(0));
+
+
+    imu_out.header = t_in.header;
+
+    // Discard translation, only use orientation for IMU transform
+    Eigen::Quaternion<double> r(
+        t_in.transform.rotation.w, t_in.transform.rotation.x, t_in.transform.rotation.y, t_in.transform.rotation.z);
+    Eigen::Transform<double,3,Eigen::Affine> t(r);
+
+    Eigen::Vector3d vel = t * Eigen::Vector3d(
+        imu_in.angular_velocity.x, imu_in.angular_velocity.y, imu_in.angular_velocity.z);
+
+    imu_out.angular_velocity.x = vel.x();
+    imu_out.angular_velocity.y = vel.y();
+    imu_out.angular_velocity.z = vel.z();
+
+
+    Eigen::Vector3d accel = t * Eigen::Vector3d(
+        imu_in.linear_acceleration.x, imu_in.linear_acceleration.y, imu_in.linear_acceleration.z);
+
+
+    imu_out.linear_acceleration.x = accel.x();
+    imu_out.linear_acceleration.y = accel.y();
+    imu_out.linear_acceleration.z = accel.z();
+
+
+  
+
+    // Orientation expresses attitude of the new frame_id in a fixed world frame. This is why the transform here applies
+    // in the opposite direction.
+    Eigen::Quaternion<double> orientation = Eigen::Quaternion<double>(
+        imu_in.orientation.w, imu_in.orientation.x, imu_in.orientation.y, imu_in.orientation.z) * r.inverse();
+
+    imu_out.orientation.w = orientation.w();
+    imu_out.orientation.x = orientation.x();
+    imu_out.orientation.y = orientation.y();
+    imu_out.orientation.z = orientation.z();
+
+    // Orientation is measured relative to the fixed world frame, so it doesn't change when applying a static
+    // transform to the sensor frame.
+    imu_out.orientation_covariance = imu_in.orientation_covariance;
+
+
+  } catch (tf2::TransformException &ex) {
+    ROS_WARN("Could not transform IMU data: %s", ex.what());
+    return;
+  }
+
+  sensor_msgs::Imu imu_transformed = imu_out;
+  this->imu_pub.publish(imu_transformed);
+
+  // Publish averaged gravity vector as a PoseStamped for RViz visualization
+  geometry_msgs::PoseStamped gravity_pose;
+  gravity_pose.header = imu_transformed.header;
+  gravity_pose.pose.position.x = 0.0;
+  gravity_pose.pose.position.y = 0.0;
+  gravity_pose.pose.position.z = 0.0;
+  // Represent the gravity direction as a quaternion from Z axis to gravity_avg
+  Eigen::Vector3f z_axis(0, 0, 1);
+  Eigen::Vector3f grav_dir = this->gravity_avg.normalized();
+  if (grav_dir.norm() > 1e-6) {
+    Eigen::Quaternionf grav_q = Eigen::Quaternionf::FromTwoVectors(z_axis, grav_dir);
+    grav_q.normalize();
+    gravity_pose.pose.orientation.w = grav_q.w();
+    gravity_pose.pose.orientation.x = grav_q.x();
+    gravity_pose.pose.orientation.y = grav_q.y();
+    gravity_pose.pose.orientation.z = grav_q.z();
+  } else {
+    gravity_pose.pose.orientation.w = 1.0;
+    gravity_pose.pose.orientation.x = 0.0;
+    gravity_pose.pose.orientation.y = 0.0;
+    gravity_pose.pose.orientation.z = 0.0;
+  }
+  this->gravity_pub.publish(gravity_pose);
+
   double ang_vel[3], lin_accel[3];
 
   // Get IMU samples
-  ang_vel[0] = imu->angular_velocity.x;
-  ang_vel[1] = imu->angular_velocity.y;
-  ang_vel[2] = imu->angular_velocity.z;
+  ang_vel[0] = imu_transformed.angular_velocity.x;
+  ang_vel[1] = imu_transformed.angular_velocity.y;
+  ang_vel[2] = imu_transformed.angular_velocity.z;
 
-  lin_accel[0] = imu->linear_acceleration.x;
-  lin_accel[1] = imu->linear_acceleration.y;
-  lin_accel[2] = imu->linear_acceleration.z;
+  lin_accel[0] = imu_transformed.linear_acceleration.x;
+  lin_accel[1] = imu_transformed.linear_acceleration.y;
+  lin_accel[2] = imu_transformed.linear_acceleration.z;
+
+  // --- Rolling average for gravity vector ---
+  {
+    Eigen::Vector3f accel(lin_accel[0], lin_accel[1], lin_accel[2]);
+    // Exponential moving average (alpha = 0.01)
+    float alpha = 0.01f;
+    if (this->gravity_avg_count == 0) {
+      this->gravity_avg = accel;
+    } else {
+      this->gravity_avg = (1.0f - alpha) * this->gravity_avg + alpha * accel;
+    }
+    this->gravity_avg_count++;
+  }
+
+  // --- End rolling average ---
 
   if (this->first_imu_time == 0.) {
-    this->first_imu_time = imu->header.stamp.toSec();
+    this->first_imu_time = imu_transformed.header.stamp.toSec();
+  }
+
+  if(this->imu_calib_time_ < 0.1) {
+    this->imu_calibrated = true;
   }
 
   // IMU calibration procedure - do for three seconds
-  if (!this->imu_calibrated && this->imu_calib_time_ > 0.1) {
+  if (!this->imu_calibrated) {
 
     static int num_samples = 0;
     static bool print = true;
 
-    if ((imu->header.stamp.toSec() - this->first_imu_time) < this->imu_calib_time_) {
+    if ((imu_transformed.header.stamp.toSec() - this->first_imu_time) < this->imu_calib_time_) {
 
       num_samples++;
 
@@ -748,6 +876,8 @@ void dlo::OdomNode::imuCB(const sensor_msgs::Imu::ConstPtr& imu) {
 
       if(print) {
         std::cout << "Calibrating IMU for " << this->imu_calib_time_ << " seconds... "; std::cout.flush();
+        std::cout << "Bias accel [xyz]: " << this->imu_bias.accel.x << ", " << this->imu_bias.accel.y << ", " << this->imu_bias.accel.z << std::endl;
+        std::cout << "Bias gyro [xyz]: " << this->imu_bias.gyro.x << ", " << this->imu_bias.gyro.y << ", " << this->imu_bias.gyro.z << std::endl;
         print = false;
       }
 
@@ -771,7 +901,7 @@ void dlo::OdomNode::imuCB(const sensor_msgs::Imu::ConstPtr& imu) {
   } else {
 
     // Apply the calibrated bias to the new IMU measurements
-    this->imu_meas.stamp = imu->header.stamp.toSec();
+    this->imu_meas.stamp = imu_transformed.header.stamp.toSec();
 
     this->imu_meas.ang_vel.x = ang_vel[0] - this->imu_bias.gyro.x;
     this->imu_meas.ang_vel.y = ang_vel[1] - this->imu_bias.gyro.y;
@@ -782,10 +912,10 @@ void dlo::OdomNode::imuCB(const sensor_msgs::Imu::ConstPtr& imu) {
     this->imu_meas.lin_accel.z = lin_accel[2];
 
     // Store into circular buffer
+    // Note: Mutex is not used
     this->mtx_imu.lock();
     this->imu_buffer.push_front(this->imu_meas);
     this->mtx_imu.unlock();
-
   }
 
 }
