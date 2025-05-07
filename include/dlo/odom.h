@@ -81,8 +81,6 @@ private:
   ros::Publisher pose_pub;
   ros::Publisher keyframe_pub;
   ros::Publisher kf_pub;
-  ros::Publisher imu_pub;
-  ros::Publisher gravity_pub; // Publisher for averaged gravity vector (now PoseStamped)
 
   Eigen::Vector3f origin;
   std::vector<std::pair<Eigen::Vector3f, Eigen::Quaternionf>> trajectory;

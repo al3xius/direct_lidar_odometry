@@ -38,8 +38,6 @@ dlo::OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle), tf_liste
   this->pose_pub = this->nh.advertise<geometry_msgs::PoseStamped>("pose", 1);
   this->kf_pub = this->nh.advertise<nav_msgs::Odometry>("kfs", 1, true);
   this->keyframe_pub = this->nh.advertise<sensor_msgs::PointCloud2>("keyframe", 1, true);
-  this->imu_pub = this->nh.advertise<sensor_msgs::Imu>("imu/data", 1);
-  this->gravity_pub = this->nh.advertise<geometry_msgs::PoseStamped>("gravity_vector", 1); // Advertise gravity vector as PoseStamped
   this->save_traj_srv = this->nh.advertiseService("save_traj", &dlo::OdomNode::saveTrajectory, this);
 
   this->odom.pose.pose.position.x = 0.;
@@ -566,14 +564,12 @@ void dlo::OdomNode::gravityAlign() {
   // Use rolling average gravity vector and transform it to the world frame
   Eigen::Vector3f lin_accel = this->gravity_avg;
 
-  std::cout << "Gravity Align: " << std::endl;
   
   // normalize
   double lin_norm = lin_accel.norm();
   if (lin_norm < 1e-6) return; // avoid division by zero
   lin_accel /= lin_norm;
   
-  std::cout << "  Gravity Vector: " << lin_accel.transpose() << std::endl;
 
   // define gravity vector (point downwards in Z-axis)
   Eigen::Vector3f grav(0, 0, 1);
@@ -581,7 +577,6 @@ void dlo::OdomNode::gravityAlign() {
   // calculate quaternion rotating measured gravity to align with the defined gravity vector
   Eigen::Quaternionf grav_q = Eigen::Quaternionf::FromTwoVectors(lin_accel, grav);
 
-  std::cout << "  Gravity Quaternion: " << grav_q.coeffs().transpose() << std::endl;
 
   // normalize
   grav_q.normalize();
@@ -597,16 +592,6 @@ void dlo::OdomNode::gravityAlign() {
   double yaw = euler[0] * (180.0/M_PI);
   double pitch = euler[1] * (180.0/M_PI);
   double roll = euler[2] * (180.0/M_PI);
-
-  std::cout << "done gravity align" << std::endl;
-  std::cout << "Gravity Align: " << std::endl;
-  std::cout << "  Gravity Vector: " << lin_accel.transpose() << std::endl;
-  std::cout << "  Gravity Quaternion: " << grav_q.coeffs().transpose() << std::endl;
-  std::cout << "  Gravity Yaw [deg]: " << yaw << std::endl;
-  std::cout << "  Gravity Roll [deg]: " << roll << std::endl;
-  std::cout << "  Gravity Pitch [deg]: " << pitch << std::endl;
-  std::cout << "  Gravity Norm: " << lin_norm << std::endl;
-  std::cout << "  Gravity samples: " << this->gravity_avg_count << std::endl;
 }
 
 
@@ -796,31 +781,6 @@ void dlo::OdomNode::imuCB(const sensor_msgs::Imu::ConstPtr& imu) {
   }
 
   sensor_msgs::Imu imu_transformed = imu_out;
-  this->imu_pub.publish(imu_transformed);
-
-  // Publish averaged gravity vector as a PoseStamped for RViz visualization
-  geometry_msgs::PoseStamped gravity_pose;
-  gravity_pose.header = imu_transformed.header;
-  gravity_pose.pose.position.x = 0.0;
-  gravity_pose.pose.position.y = 0.0;
-  gravity_pose.pose.position.z = 0.0;
-  // Represent the gravity direction as a quaternion from Z axis to gravity_avg
-  Eigen::Vector3f z_axis(0, 0, 1);
-  Eigen::Vector3f grav_dir = this->gravity_avg.normalized();
-  if (grav_dir.norm() > 1e-6) {
-    Eigen::Quaternionf grav_q = Eigen::Quaternionf::FromTwoVectors(z_axis, grav_dir);
-    grav_q.normalize();
-    gravity_pose.pose.orientation.w = grav_q.w();
-    gravity_pose.pose.orientation.x = grav_q.x();
-    gravity_pose.pose.orientation.y = grav_q.y();
-    gravity_pose.pose.orientation.z = grav_q.z();
-  } else {
-    gravity_pose.pose.orientation.w = 1.0;
-    gravity_pose.pose.orientation.x = 0.0;
-    gravity_pose.pose.orientation.y = 0.0;
-    gravity_pose.pose.orientation.z = 0.0;
-  }
-  this->gravity_pub.publish(gravity_pose);
 
   double ang_vel[3], lin_accel[3];
 
