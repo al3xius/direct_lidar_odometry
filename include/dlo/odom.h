@@ -48,6 +48,7 @@ private:
   //                    direct_lidar_odometry::save_traj::Response& res);
 
   void getParams();
+  void init();
 
   void publishToROS();
   void publishPose();
