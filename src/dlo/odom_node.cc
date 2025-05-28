@@ -8,28 +8,26 @@
  ***********************************************************/
 
 #include "dlo/odom.h"
+#include "rclcpp/rclcpp.hpp"
+#include <signal.h>
+#include <unistd.h>
 
 void controlC(int sig) {
-
-  dlo::OdomNode::abort();
-
+  OdomNode::abort();
 }
 
-int main(int argc, char** argv) {
-
+int main(int argc, char ** argv)
+{
   rclcpp::init(argc, argv);
-  auto node = rclcpp::Node::make_shared("dlo_odom_node");
-  rclcpp::Node nh("~");
 
   signal(SIGTERM, controlC);
   sleep(0.5);
 
-  dlo::OdomNode node(nh);
-  ros::AsyncSpinner spinner(0);
-  spinner.start();
-  node.start();
-  ros::waitForShutdown();
+  auto node = std::make_shared<OdomNode>();
+  node->start();
+
+  rclcpp::spin(node);
+  rclcpp::shutdown();
 
   return 0;
-
 }

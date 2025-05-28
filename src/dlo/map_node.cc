@@ -7,29 +7,30 @@
  *
  ***********************************************************/
 
+// src/dlo/map_main.cc
+
 #include "dlo/map.h"
+#include "rclcpp/rclcpp.hpp"
+#include <signal.h>
+#include <unistd.h>
 
 void controlC(int sig) {
-
-  dlo::MapNode::abort();
-
+  MapNode::abort();
 }
 
-int main(int argc, char** argv) {
-
+int main(int argc, char ** argv)
+{
   rclcpp::init(argc, argv);
-  auto node = rclcpp::Node::make_shared("dlo_map_node");
-  rclcpp::Node nh("~");
 
   signal(SIGTERM, controlC);
   sleep(0.5);
 
-  dlo::MapNode node(nh);
-  ros::AsyncSpinner spinner(1);
-  spinner.start();
-  node.start();
-  ros::waitForShutdown();
+  auto node = std::make_shared<MapNode>();
+  node->start();
+
+  rclcpp::spin(node);
+  rclcpp::shutdown();
 
   return 0;
-
 }
+

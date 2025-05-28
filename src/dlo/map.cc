@@ -9,33 +9,47 @@
 
 #include "dlo/map.h"
 
-std::atomic<bool> dlo::MapNode::abort_(false);
+std::atomic<bool> MapNode::abort_(false);
 
 
 /**
  * Constructor
  **/
 
-dlo::MapNode::MapNode(rclcpp::Node node_handle) : nh(node_handle) {
-
+MapNode::MapNode()
+: Node("map_node")  // Constructor of the base class rclcpp::Node
+{
   this->getParams();
 
-  this->abort_timer = this->nh.createTimer(rclcpp::Duration(0.01), &dlo::MapNode::abortTimerCB, this);
+  this->abort_timer = this->create_wall_timer(
+    std::chrono::milliseconds(10),
+    std::bind(&MapNode::abortTimerCB, this)
+  );
 
-  if (this->publish_full_map_){
-    this->publish_timer = this->nh.createTimer(rclcpp::Duration(this->publish_freq_), &dlo::MapNode::publishTimerCB, this);
+  if (this->publish_full_map_) {
+    this->publish_timer = this->create_wall_timer(
+      std::chrono::duration<double>(this->publish_freq_),
+      std::bind(&MapNode::publishTimerCB, this)
+    );
   }
-  
-  this->keyframe_sub = this->nh.subscribe("keyframes", 1, &dlo::MapNode::keyframeCB, this);
-  this->map_pub = this->nh.advertise<sensor_msgs::msg::PointCloud2>("map", 1);
 
-  this->save_pcd_srv = this->nh.advertiseService("save_pcd", &dlo::MapNode::savePcd, this);
+  this->keyframe_sub = this->create_subscription<sensor_msgs::msg::PointCloud2>(
+    "keyframes", rclcpp::QoS(1),
+    std::bind(&MapNode::keyframeCB, this, std::placeholders::_1)
+  );
 
-  // initialize map
-  this->dlo_map = pcl::PointCloud<PointType>::Ptr (new pcl::PointCloud<PointType>);
+  this->map_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>(
+    "map", rclcpp::QoS(1)
+  );
 
-  RCLCPP_INFO(rclcpp::get_logger("DirectLidarOdometry"), "DLO Map Node Initialized");
+  // Example ROS 2 style service creation:
+  // this->save_pcd_srv = this->create_service<direct_lidar_odometry::srv::SavePcd>(
+  //   "save_pcd", std::bind( &MapNode::savePcd, this, std::placeholders::_1, std::placeholders::_2)
+  // );
 
+  this->dlo_map = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
+
+  RCLCPP_INFO(this->get_logger(), "DLO Map Node Initialized");
 }
 
 
@@ -43,22 +57,29 @@ dlo::MapNode::MapNode(rclcpp::Node node_handle) : nh(node_handle) {
  * Destructor
  **/
 
-dlo::MapNode::~MapNode() {}
+MapNode::~MapNode() {}
 
 
 /**
  * Get Params
  **/
 
-void dlo::MapNode::getParams() {
+void MapNode::getParams() {
 
-  ros::param::param<std::string>("~dlo/odomNode/odom_frame", this->odom_frame, "odom");
-  ros::param::param<bool>("~dlo/mapNode/publishFullMap", this->publish_full_map_, true);
-  ros::param::param<double>("~dlo/mapNode/publishFreq", this->publish_freq_, 1.0);
-  ros::param::param<double>("~dlo/mapNode/leafSize", this->leaf_size_, 0.5);
+  this->declare_parameter<std::string>("dlo/odomNode/odom_frame", "odom");
+  this->get_parameter("dlo/odomNode/odom_frame", this->odom_frame);
 
-  // Get Node NS and Remove Leading Character
-  std::string ns = ros::this_node::getNamespace();
+  this->declare_parameter<bool>("dlo/mapNode/publishFullMap", true);
+  this->get_parameter("dlo/mapNode/publishFullMap", this->publish_full_map_);
+
+  this->declare_parameter<double>("dlo/mapNode/publishFreq", 1.0);
+  this->get_parameter("dlo/mapNode/publishFreq", this->publish_freq_);
+
+  this->declare_parameter<double>("dlo/mapNode/leafSize", 0.5);
+  this->get_parameter("dlo/mapNode/leafSize", this->leaf_size_);
+
+  // Get Node NS and Remove Leading Character 
+  std::string ns = this->get_namespace();
   ns.erase(0,1);
 
   // Concatenate Frame Name Strings
@@ -71,7 +92,7 @@ void dlo::MapNode::getParams() {
  * Start Map Node
  **/
 
-void dlo::MapNode::start() {
+void MapNode::start() {
   RCLCPP_INFO(rclcpp::get_logger("DirectLidarOdometry"), "Starting DLO Map Node");
 }
 
@@ -80,11 +101,11 @@ void dlo::MapNode::start() {
  * Stop Map Node
  **/
 
-void dlo::MapNode::stop() {
+void MapNode::stop() {
   RCLCPP_WARN(rclcpp::get_logger("DirectLidarOdometry"), "Stopping DLO Map Node");
 
   // shutdown
-  ros::shutdown();
+  rclcpp::shutdown();
 }
 
 
@@ -92,7 +113,7 @@ void dlo::MapNode::stop() {
  * Abort Timer Callback
  **/
 
-void dlo::MapNode::abortTimerCB(const rclcpp::TimerEvent& e) {
+void MapNode::abortTimerCB() {
   if (abort_) {
     stop();
   }
@@ -103,14 +124,15 @@ void dlo::MapNode::abortTimerCB(const rclcpp::TimerEvent& e) {
  * Publish Timer Callback
  **/
 
-void dlo::MapNode::publishTimerCB(const rclcpp::TimerEvent& e) {
+void MapNode::publishTimerCB() {
 
   if (this->dlo_map->points.size() == this->dlo_map->width * this->dlo_map->height) {
     sensor_msgs::msg::PointCloud2 map_ros;
     pcl::toROSMsg(*this->dlo_map, map_ros);
-    map_ros.header.stamp = rclcpp::Time::now();
+    map_ros.header.stamp = this->get_clock()->now();
     map_ros.header.frame_id = this->odom_frame;
-    this->map_pub.publish(map_ros);
+    this->map_pub->publish(map_ros);
+
   }
   
 }
@@ -120,7 +142,7 @@ void dlo::MapNode::publishTimerCB(const rclcpp::TimerEvent& e) {
  * Node Callback
  **/
 
-void dlo::MapNode::keyframeCB(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& keyframe) {
+void MapNode::keyframeCB(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& keyframe) {
 
   // convert scan to pcl format
   pcl::PointCloud<PointType>::Ptr keyframe_pcl = pcl::PointCloud<PointType>::Ptr (new pcl::PointCloud<PointType>);
@@ -139,15 +161,16 @@ void dlo::MapNode::keyframeCB(const sensor_msgs::msg::PointCloud2::ConstSharedPt
     if (keyframe_pcl->points.size() == keyframe_pcl->width * keyframe_pcl->height) {
       sensor_msgs::msg::PointCloud2 map_ros;
       pcl::toROSMsg(*keyframe_pcl, map_ros);
-      map_ros.header.stamp = rclcpp::Time::now();
+      map_ros.header.stamp = map_ros.header.stamp = this->get_clock()->now();;
       map_ros.header.frame_id = this->odom_frame;
-      this->map_pub.publish(map_ros);
+      this->map_pub->publish(map_ros);
     }
   }
 
 }
 
-bool dlo::MapNode::savePcd(direct_lidar_odometry::save_pcd::Request& req,
+/*
+bool MapNode::savePcd(direct_lidar_odometry::save_pcd::Request& req,
                            direct_lidar_odometry::save_pcd::Response& res) {
 
   pcl::PointCloud<PointType>::Ptr m =
@@ -176,4 +199,5 @@ bool dlo::MapNode::savePcd(direct_lidar_odometry::save_pcd::Request& req,
 
   return res.success;
 
-}
+}*/
+

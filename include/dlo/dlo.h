@@ -6,57 +6,54 @@
  * Contact: kennyjchen@ucla.edu, btlopez@ucla.edu
  *
  ***********************************************************/
+#pragma once
 
-#include <atomic>
+
 #include <fstream>
 #include <iomanip>
-#include <ios>
 #include <iostream>
 #include <mutex>
-#include <signal.h>
 #include <sstream>
-#include <stdio.h>
-#include <stdlib.h>
 #include <string>
 #include <sys/times.h>
-#include <sys/vtimes.h>
 #include <thread>
 
-#ifdef HAS_CPUID
-#include <cpuid.h>
-#endif
+#include <pcl/common/transforms.h>
+#include <pcl/conversions.h>
+#include <pcl/filters/voxel_grid.h>
 
 #include "rclcpp/rclcpp.hpp"
-#include <boost/circular_buffer.hpp>
-#include <boost/algorithm/string.hpp>
-
-#include <pcl/filters/crop_box.h>
-#include <pcl/filters/voxel_grid.h>
-#include <pcl/io/pcd_io.h>
-#include <pcl/surface/concave_hull.h>
-#include <pcl/surface/convex_hull.h>
-#include <pcl_conversions/pcl_conversions.h>
-#include <pcl_ros/impl/transforms.hpp>
-#include <pcl_ros/point_cloud.h>
-#include <pcl_ros/transforms.h>
 #include <tf2_ros/transform_broadcaster.h>
-
-#include <geometry_msgs/msg/pose_stamped.hpp>
-#include <nav_msgs/msg/odometry.hpp>
-#include <sensor_msgs/msg/camera_info.hpp>
-#include <sensor_msgs/msg/image.hpp>
-#include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 
-#include <direct_lidar_odometry/save_pcd.h>
-#include <direct_lidar_odometry/save_traj.h>
 #include <nano_gicp/nano_gicp.hpp>
-
 typedef pcl::PointXYZI PointType;
 
-namespace dlo {
+#include <chrono>
+#include <iostream>
 
-  class OdomNode;
-  class MapNode;
+class Timer {
+public:
 
-}
+    Timer() { tic(); }
+    Timer(const std::string& nameIn) : name(nameIn) { tic(); }
+
+
+    void tic() { start = std::chrono::system_clock::now(); }
+
+
+    double toc() {
+        end = std::chrono::system_clock::now();
+        std::chrono::duration<double> dt = end - start;
+        start = end;
+        return dt.count() * 1000;
+    }
+
+    void toc_cout() { std::cout << "[" << name << "]:" << toc() << "ms" << std::endl; }
+
+private:
+    const std::string name;
+    std::chrono::time_point<std::chrono::system_clock> start, end;
+};
+
+#define TIMER_CREATE(name) Timer name(#name)

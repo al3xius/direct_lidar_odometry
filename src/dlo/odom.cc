@@ -9,16 +9,22 @@
 
 #include "dlo/odom.h"
 
-std::atomic<bool> dlo::OdomNode::abort_(false);
+std::atomic<bool> OdomNode::abort_(false);
 
 
 /**
  * Constructor
  **/
 
-dlo::OdomNode::OdomNode(rclcpp::Node node_handle) : nh(node_handle) {
+OdomNode::OdomNode() : Node("odom_node")  // Constructor of the base class rclcpp::Node
+{
 
   this->getParams();
+
+  this->abort_timer = this->create_wall_timer(
+    std::chrono::milliseconds(10),
+    std::bind(&OdomNode::abortTimerCB, this)
+  );
 
   this->stop_publish_thread = false;
   this->stop_publish_keyframe_thread = false;
@@ -28,14 +34,26 @@ dlo::OdomNode::OdomNode(rclcpp::Node node_handle) : nh(node_handle) {
   this->dlo_initialized = false;
   this->imu_calibrated = false;
 
-  this->icp_sub = this->nh.subscribe("pointcloud", 1, &dlo::OdomNode::icpCB, this);
-  this->imu_sub = this->nh.subscribe("imu", 1, &dlo::OdomNode::imuCB, this);
+// Subscriptions
+this->icp_sub = this->create_subscription<sensor_msgs::msg::PointCloud2>(
+  "pointcloud", rclcpp::SensorDataQoS(),
+  std::bind(&OdomNode::icpCB, this, std::placeholders::_1));
 
-  this->odom_pub = this->nh.advertise<nav_msgs::msg::Odometry>("odom", 1);
-  this->pose_pub = this->nh.advertise<geometry_msgs::msg::PoseStamped>("pose", 1);
-  this->kf_pub = this->nh.advertise<nav_msgs::msg::Odometry>("kfs", 1, true);
-  this->keyframe_pub = this->nh.advertise<sensor_msgs::msg::PointCloud2>("keyframe", 1, true);
-  this->save_traj_srv = this->nh.advertiseService("save_traj", &dlo::OdomNode::saveTrajectory, this);
+this->imu_sub = this->create_subscription<sensor_msgs::msg::Imu>(
+  "imu", rclcpp::SensorDataQoS(),
+  std::bind(&OdomNode::imuCB, this, std::placeholders::_1));
+
+// Publishers
+this->odom_pub = this->create_publisher<nav_msgs::msg::Odometry>("odom", 10);
+this->pose_pub = this->create_publisher<geometry_msgs::msg::PoseStamped>("pose", 10);
+this->kf_pub = this->create_publisher<nav_msgs::msg::Odometry>("kfs", rclcpp::QoS(10).transient_local().reliable());
+this->keyframe_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>("keyframe", rclcpp::QoS(10).transient_local().reliable());
+
+// Service
+//this->save_traj_srv = this->create_service<direct_lidar_odometry::srv::SaveTraj>(
+//  "save_traj", std::bind(&OdomNode::saveTrajectory, this,
+//                         std::placeholders::_1, std::placeholders::_2));
+
 
   this->odom.pose.pose.position.x = 0.;
   this->odom.pose.pose.position.y = 0.;
@@ -135,6 +153,8 @@ dlo::OdomNode::OdomNode(rclcpp::Node node_handle) : nh(node_handle) {
 
   this->metrics.spaciousness.push_back(0.);
 
+  tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(shared_from_this());
+
   // CPU Specs
   char CPUBrandString[0x40];
   memset(CPUBrandString, 0, sizeof(CPUBrandString));
@@ -182,7 +202,7 @@ dlo::OdomNode::OdomNode(rclcpp::Node node_handle) : nh(node_handle) {
  * Destructor
  **/
 
-dlo::OdomNode::~OdomNode() {}
+OdomNode::~OdomNode() {}
 
 
 
@@ -190,93 +210,132 @@ dlo::OdomNode::~OdomNode() {}
  * Odom Node Parameters
  **/
 
-void dlo::OdomNode::getParams() {
-
+void OdomNode::getParams() {
   // Version
-  ros::param::param<std::string>("~dlo/version", this->version_, "0.0.0");
+  this->declare_parameter("dlo.version", "0.0.0");
+  this->get_parameter("dlo.version", this->version_);
 
   // Frames
-  ros::param::param<std::string>("~dlo/odomNode/odom_frame", this->odom_frame, "odom");
-  ros::param::param<std::string>("~dlo/odomNode/child_frame", this->child_frame, "base_link");
+  this->declare_parameter("dlo.odomNode.odom_frame", "odom");
+  this->get_parameter("dlo.odomNode.odom_frame", this->odom_frame);
+  this->declare_parameter("dlo.odomNode.child_frame", "base_link");
+  this->get_parameter("dlo.odomNode.child_frame", this->child_frame);
 
-  // Get Node NS and Remove Leading Character
-  std::string ns = ros::this_node::getNamespace();
-  ns.erase(0,1);
+  // TF Publishing
+  this->declare_parameter("dlo.odomNode.publishTF", false);
+  this->get_parameter("dlo.odomNode.publishTF", this->publish_tf_);
 
-  // Concatenate Frame Name Strings
-  //this->odom_frame = ns + "/" + this->odom_frame;
-  //this->child_frame = ns + "/" + this->child_frame;
-
-  ros::param::param<bool>("~dlo/odomNode/publishTF", this->publish_tf_, false);
   // Gravity alignment
-  ros::param::param<bool>("~dlo/gravityAlign", this->gravity_align_, false);
+  this->declare_parameter("dlo.gravityAlign", false);
+  this->get_parameter("dlo.gravityAlign", this->gravity_align_);
 
   // Keyframe Threshold
-  ros::param::param<double>("~dlo/odomNode/keyframe/threshD", this->keyframe_thresh_dist_, 0.1);
-  ros::param::param<double>("~dlo/odomNode/keyframe/threshR", this->keyframe_thresh_rot_, 1.0);
+  this->declare_parameter("dlo.odomNode.keyframe.threshD", 0.1);
+  this->get_parameter("dlo.odomNode.keyframe.threshD", this->keyframe_thresh_dist_);
+  this->declare_parameter("dlo.odomNode.keyframe.threshR", 1.0);
+  this->get_parameter("dlo.odomNode.keyframe.threshR", this->keyframe_thresh_rot_);
 
   // Submap
-  ros::param::param<int>("~dlo/odomNode/submap/keyframe/knn", this->submap_knn_, 10);
-  ros::param::param<int>("~dlo/odomNode/submap/keyframe/kcv", this->submap_kcv_, 10);
-  ros::param::param<int>("~dlo/odomNode/submap/keyframe/kcc", this->submap_kcc_, 10);
+  this->declare_parameter("dlo.odomNode.submap.keyframe.knn", 10);
+  this->get_parameter("dlo.odomNode.submap.keyframe.knn", this->submap_knn_);
+  this->declare_parameter("dlo.odomNode.submap.keyframe.kcv", 10);
+  this->get_parameter("dlo.odomNode.submap.keyframe.kcv", this->submap_kcv_);
+  this->declare_parameter("dlo.odomNode.submap.keyframe.kcc", 10);
+  this->get_parameter("dlo.odomNode.submap.keyframe.kcc", this->submap_kcc_);
 
   // Initial Position
-  ros::param::param<bool>("~dlo/odomNode/initialPose/use", this->initial_pose_use_, false);
+  this->declare_parameter("dlo.odomNode.initialPose.use", false);
+  this->get_parameter("dlo.odomNode.initialPose.use", this->initial_pose_use_);
 
-  double px, py, pz, qx, qy, qz, qw;
-  ros::param::param<double>("~dlo/odomNode/initialPose/position/x", px, 0.0);
-  ros::param::param<double>("~dlo/odomNode/initialPose/position/y", py, 0.0);
-  ros::param::param<double>("~dlo/odomNode/initialPose/position/z", pz, 0.0);
-  ros::param::param<double>("~dlo/odomNode/initialPose/orientation/w", qw, 1.0);
-  ros::param::param<double>("~dlo/odomNode/initialPose/orientation/x", qx, 0.0);
-  ros::param::param<double>("~dlo/odomNode/initialPose/orientation/y", qy, 0.0);
-  ros::param::param<double>("~dlo/odomNode/initialPose/orientation/z", qz, 0.0);
+  double px = 0.0, py = 0.0, pz = 0.0;
+  double qw = 1.0, qx = 0.0, qy = 0.0, qz = 0.0;
+  this->declare_parameter("dlo.odomNode.initialPose.position.x", px);
+  this->declare_parameter("dlo.odomNode.initialPose.position.y", py);
+  this->declare_parameter("dlo.odomNode.initialPose.position.z", pz);
+  this->declare_parameter("dlo.odomNode.initialPose.orientation.w", qw);
+  this->declare_parameter("dlo.odomNode.initialPose.orientation.x", qx);
+  this->declare_parameter("dlo.odomNode.initialPose.orientation.y", qy);
+  this->declare_parameter("dlo.odomNode.initialPose.orientation.z", qz);
+  this->get_parameter("dlo.odomNode.initialPose.position.x", px);
+  this->get_parameter("dlo.odomNode.initialPose.position.y", py);
+  this->get_parameter("dlo.odomNode.initialPose.position.z", pz);
+  this->get_parameter("dlo.odomNode.initialPose.orientation.w", qw);
+  this->get_parameter("dlo.odomNode.initialPose.orientation.x", qx);
+  this->get_parameter("dlo.odomNode.initialPose.orientation.y", qy);
+  this->get_parameter("dlo.odomNode.initialPose.orientation.z", qz);
   this->initial_position_ = Eigen::Vector3f(px, py, pz);
   this->initial_orientation_ = Eigen::Quaternionf(qw, qx, qy, qz);
 
   // Crop Box Filter
-  ros::param::param<bool>("~dlo/odomNode/preprocessing/cropBoxFilter/use", this->crop_use_, false);
-  ros::param::param<double>("~dlo/odomNode/preprocessing/cropBoxFilter/size", this->crop_size_, 1.0);
+  this->declare_parameter("dlo.odomNode.preprocessing.cropBoxFilter.use", false);
+  this->get_parameter("dlo.odomNode.preprocessing.cropBoxFilter.use", this->crop_use_);
+  this->declare_parameter("dlo.odomNode.preprocessing.cropBoxFilter.size", 1.0);
+  this->get_parameter("dlo.odomNode.preprocessing.cropBoxFilter.size", this->crop_size_);
 
   // Voxel Grid Filter
-  ros::param::param<bool>("~dlo/odomNode/preprocessing/voxelFilter/scan/use", this->vf_scan_use_, true);
-  ros::param::param<double>("~dlo/odomNode/preprocessing/voxelFilter/scan/res", this->vf_scan_res_, 0.05);
-  ros::param::param<bool>("~dlo/odomNode/preprocessing/voxelFilter/submap/use", this->vf_submap_use_, false);
-  ros::param::param<double>("~dlo/odomNode/preprocessing/voxelFilter/submap/res", this->vf_submap_res_, 0.1);
+  this->declare_parameter("dlo.odomNode.preprocessing.voxelFilter.scan.use", true);
+  this->get_parameter("dlo.odomNode.preprocessing.voxelFilter.scan.use", this->vf_scan_use_);
+  this->declare_parameter("dlo.odomNode.preprocessing.voxelFilter.scan.res", 0.05);
+  this->get_parameter("dlo.odomNode.preprocessing.voxelFilter.scan.res", this->vf_scan_res_);
+  this->declare_parameter("dlo.odomNode.preprocessing.voxelFilter.submap.use", false);
+  this->get_parameter("dlo.odomNode.preprocessing.voxelFilter.submap.use", this->vf_submap_use_);
+  this->declare_parameter("dlo.odomNode.preprocessing.voxelFilter.submap.res", 0.1);
+  this->get_parameter("dlo.odomNode.preprocessing.voxelFilter.submap.res", this->vf_submap_res_);
 
   // Adaptive Parameters
-  ros::param::param<bool>("~dlo/adaptiveParams", this->adaptive_params_use_, false);
+  this->declare_parameter("dlo.adaptiveParams", false);
+  this->get_parameter("dlo.adaptiveParams", this->adaptive_params_use_);
 
   // IMU
-  ros::param::param<bool>("~dlo/imu", this->imu_use_, false);
-  ros::param::param<int>("~dlo/odomNode/imu/calibTime", this->imu_calib_time_, 3);
-  ros::param::param<int>("~dlo/odomNode/imu/bufferSize", this->imu_buffer_size_, 2000);
+  this->declare_parameter("dlo.imu", false);
+  this->get_parameter("dlo.imu", this->imu_use_);
+  this->declare_parameter("dlo.odomNode.imu.calibTime", 3);
+  this->get_parameter("dlo.odomNode.imu.calibTime", this->imu_calib_time_);
+  this->declare_parameter("dlo.odomNode.imu.bufferSize", 2000);
+  this->get_parameter("dlo.odomNode.imu.bufferSize", this->imu_buffer_size_);
 
-  // GICP
-  ros::param::param<int>("~dlo/odomNode/gicp/minNumPoints", this->gicp_min_num_points_, 100);
-  ros::param::param<int>("~dlo/odomNode/gicp/s2s/kCorrespondences", this->gicps2s_k_correspondences_, 20);
-  ros::param::param<double>("~dlo/odomNode/gicp/s2s/maxCorrespondenceDistance", this->gicps2s_max_corr_dist_, std::sqrt(std::numeric_limits<double>::max()));
-  ros::param::param<int>("~dlo/odomNode/gicp/s2s/maxIterations", this->gicps2s_max_iter_, 64);
-  ros::param::param<double>("~dlo/odomNode/gicp/s2s/transformationEpsilon", this->gicps2s_transformation_ep_, 0.0005);
-  ros::param::param<double>("~dlo/odomNode/gicp/s2s/euclideanFitnessEpsilon", this->gicps2s_euclidean_fitness_ep_, -std::numeric_limits<double>::max());
-  ros::param::param<int>("~dlo/odomNode/gicp/s2s/ransac/iterations", this->gicps2s_ransac_iter_, 0);
-  ros::param::param<double>("~dlo/odomNode/gicp/s2s/ransac/outlierRejectionThresh", this->gicps2s_ransac_inlier_thresh_, 0.05);
-  ros::param::param<int>("~dlo/odomNode/gicp/s2m/kCorrespondences", this->gicps2m_k_correspondences_, 20);
-  ros::param::param<double>("~dlo/odomNode/gicp/s2m/maxCorrespondenceDistance", this->gicps2m_max_corr_dist_, std::sqrt(std::numeric_limits<double>::max()));
-  ros::param::param<int>("~dlo/odomNode/gicp/s2m/maxIterations", this->gicps2m_max_iter_, 64);
-  ros::param::param<double>("~dlo/odomNode/gicp/s2m/transformationEpsilon", this->gicps2m_transformation_ep_, 0.0005);
-  ros::param::param<double>("~dlo/odomNode/gicp/s2m/euclideanFitnessEpsilon", this->gicps2m_euclidean_fitness_ep_, -std::numeric_limits<double>::max());
-  ros::param::param<int>("~dlo/odomNode/gicp/s2m/ransac/iterations", this->gicps2m_ransac_iter_, 0);
-  ros::param::param<double>("~dlo/odomNode/gicp/s2m/ransac/outlierRejectionThresh", this->gicps2m_ransac_inlier_thresh_, 0.05);
+  // GICP (S2S)
+  this->declare_parameter("dlo.odomNode.gicp.minNumPoints", 100);
+  this->get_parameter("dlo.odomNode.gicp.minNumPoints", this->gicp_min_num_points_);
+  this->declare_parameter("dlo.odomNode.gicp.s2s.kCorrespondences", 20);
+  this->get_parameter("dlo.odomNode.gicp.s2s.kCorrespondences", this->gicps2s_k_correspondences_);
+  this->declare_parameter("dlo.odomNode.gicp.s2s.maxCorrespondenceDistance", std::sqrt(std::numeric_limits<double>::max()));
+  this->get_parameter("dlo.odomNode.gicp.s2s.maxCorrespondenceDistance", this->gicps2s_max_corr_dist_);
+  this->declare_parameter("dlo.odomNode.gicp.s2s.maxIterations", 64);
+  this->get_parameter("dlo.odomNode.gicp.s2s.maxIterations", this->gicps2s_max_iter_);
+  this->declare_parameter("dlo.odomNode.gicp.s2s.transformationEpsilon", 0.0005);
+  this->get_parameter("dlo.odomNode.gicp.s2s.transformationEpsilon", this->gicps2s_transformation_ep_);
+  this->declare_parameter("dlo.odomNode.gicp.s2s.euclideanFitnessEpsilon", -std::numeric_limits<double>::max());
+  this->get_parameter("dlo.odomNode.gicp.s2s.euclideanFitnessEpsilon", this->gicps2s_euclidean_fitness_ep_);
+  this->declare_parameter("dlo.odomNode.gicp.s2s.ransac.iterations", 0);
+  this->get_parameter("dlo.odomNode.gicp.s2s.ransac.iterations", this->gicps2s_ransac_iter_);
+  this->declare_parameter("dlo.odomNode.gicp.s2s.ransac.outlierRejectionThresh", 0.05);
+  this->get_parameter("dlo.odomNode.gicp.s2s.ransac.outlierRejectionThresh", this->gicps2s_ransac_inlier_thresh_);
 
+  // GICP (S2M)
+  this->declare_parameter("dlo.odomNode.gicp.s2m.kCorrespondences", 20);
+  this->get_parameter("dlo.odomNode.gicp.s2m.kCorrespondences", this->gicps2m_k_correspondences_);
+  this->declare_parameter("dlo.odomNode.gicp.s2m.maxCorrespondenceDistance", std::sqrt(std::numeric_limits<double>::max()));
+  this->get_parameter("dlo.odomNode.gicp.s2m.maxCorrespondenceDistance", this->gicps2m_max_corr_dist_);
+  this->declare_parameter("dlo.odomNode.gicp.s2m.maxIterations", 64);
+  this->get_parameter("dlo.odomNode.gicp.s2m.maxIterations", this->gicps2m_max_iter_);
+  this->declare_parameter("dlo.odomNode.gicp.s2m.transformationEpsilon", 0.0005);
+  this->get_parameter("dlo.odomNode.gicp.s2m.transformationEpsilon", this->gicps2m_transformation_ep_);
+  this->declare_parameter("dlo.odomNode.gicp.s2m.euclideanFitnessEpsilon", -std::numeric_limits<double>::max());
+  this->get_parameter("dlo.odomNode.gicp.s2m.euclideanFitnessEpsilon", this->gicps2m_euclidean_fitness_ep_);
+  this->declare_parameter("dlo.odomNode.gicp.s2m.ransac.iterations", 0);
+  this->get_parameter("dlo.odomNode.gicp.s2m.ransac.iterations", this->gicps2m_ransac_iter_);
+  this->declare_parameter("dlo.odomNode.gicp.s2m.ransac.outlierRejectionThresh", 0.05);
+  this->get_parameter("dlo.odomNode.gicp.s2m.ransac.outlierRejectionThresh", this->gicps2m_ransac_inlier_thresh_);
 }
+
 
 
 /**
  * Start Odom Thread
  **/
 
-void dlo::OdomNode::start() {
+void OdomNode::start() {
   RCLCPP_INFO(rclcpp::get_logger("DirectLidarOdometry"), "Starting DLO Odometry Node");
 
   printf("\033[2J\033[1;1H");
@@ -289,7 +348,7 @@ void dlo::OdomNode::start() {
  * Stop Odom Thread
  **/
 
-void dlo::OdomNode::stop() {
+void OdomNode::stop() {
   RCLCPP_WARN(rclcpp::get_logger("DirectLidarOdometry"), "Stopping DLO Odometry Node");
 
   this->stop_publish_thread = true;
@@ -312,7 +371,7 @@ void dlo::OdomNode::stop() {
     this->debug_thread.join();
   }
 
-  ros::shutdown();
+  rclcpp::shutdown();
 }
 
 
@@ -320,7 +379,7 @@ void dlo::OdomNode::stop() {
  * Abort Timer Callback
  **/
 
-void dlo::OdomNode::abortTimerCB(const rclcpp::TimerEvent& e) {
+void OdomNode::abortTimerCB() {
   if (abort_) {
     stop();
   }
@@ -331,7 +390,7 @@ void dlo::OdomNode::abortTimerCB(const rclcpp::TimerEvent& e) {
  * Publish to ROS
  **/
 
-void dlo::OdomNode::publishToROS() {
+void OdomNode::publishToROS() {
   this->publishPose();
   if(this->publish_tf_ == true)
   {
@@ -344,7 +403,7 @@ void dlo::OdomNode::publishToROS() {
  * Publish Pose
  **/
 
-void dlo::OdomNode::publishPose() {
+void OdomNode::publishPose() {
 
   // Sign flip check
   static Eigen::Quaternionf q_diff{1., 0., 0., 0.};
@@ -372,7 +431,7 @@ void dlo::OdomNode::publishPose() {
   this->odom.header.stamp = this->scan_stamp;
   this->odom.header.frame_id = this->odom_frame;
   this->odom.child_frame_id = this->child_frame;
-  this->odom_pub.publish(this->odom);
+  this->odom_pub->publish(this->odom);
 
   this->pose_ros.header.stamp = this->scan_stamp;
   this->pose_ros.header.frame_id = this->odom_frame;
@@ -386,7 +445,7 @@ void dlo::OdomNode::publishPose() {
   this->pose_ros.pose.orientation.y = this->rotq.y();
   this->pose_ros.pose.orientation.z = this->rotq.z();
 
-  this->pose_pub.publish(this->pose_ros);
+  this->pose_pub->publish(this->pose_ros);
 }
 
 
@@ -394,9 +453,9 @@ void dlo::OdomNode::publishPose() {
  * Publish Transform
  **/
 
-void dlo::OdomNode::publishTransform() {
+void OdomNode::publishTransform() {
 
-  static tf2_ros::TransformBroadcaster br;
+
   geometry_msgs::msg::TransformStamped transformStamped;
 
   transformStamped.header.stamp = this->scan_stamp;
@@ -412,7 +471,7 @@ void dlo::OdomNode::publishTransform() {
   transformStamped.transform.rotation.y = this->rotq.y();
   transformStamped.transform.rotation.z = this->rotq.z();
 
-  br.sendTransform(transformStamped);
+  tf_broadcaster_->sendTransform(transformStamped);
 
 }
 
@@ -421,7 +480,7 @@ void dlo::OdomNode::publishTransform() {
  * Publish Keyframe Pose and Scan
  **/
 
-void dlo::OdomNode::publishKeyframe() {
+void OdomNode::publishKeyframe() {
 
   // Publish keyframe pose
   this->kf.header.stamp = this->scan_stamp;
@@ -437,7 +496,7 @@ void dlo::OdomNode::publishKeyframe() {
   this->kf.pose.pose.orientation.y = this->rotq.y();
   this->kf.pose.pose.orientation.z = this->rotq.z();
 
-  this->kf_pub.publish(this->kf);
+  this->kf_pub->publish(this->kf);
 
   // Publish keyframe scan
   if (this->keyframe_cloud->points.size() == this->keyframe_cloud->width * this->keyframe_cloud->height) {
@@ -445,7 +504,7 @@ void dlo::OdomNode::publishKeyframe() {
     pcl::toROSMsg(*this->keyframe_cloud, keyframe_cloud_ros);
     keyframe_cloud_ros.header.stamp = this->scan_stamp;
     keyframe_cloud_ros.header.frame_id = this->odom_frame;
-    this->keyframe_pub.publish(keyframe_cloud_ros);
+    this->keyframe_pub->publish(keyframe_cloud_ros);
   }
 
 }
@@ -455,7 +514,7 @@ void dlo::OdomNode::publishKeyframe() {
  * Preprocessing
  **/
 
-void dlo::OdomNode::preprocessPoints() {
+void OdomNode::preprocessPoints() {
 
   // Original Scan
   *this->original_scan = *this->current_scan;
@@ -484,7 +543,7 @@ void dlo::OdomNode::preprocessPoints() {
  * Initialize Input Target
  **/
 
-void dlo::OdomNode::initializeInputTarget() {
+void OdomNode::initializeInputTarget() {
 
   this->prev_frame_stamp = this->curr_frame_stamp;
 
@@ -514,7 +573,7 @@ void dlo::OdomNode::initializeInputTarget() {
   this->gicp_s2s.calculateSourceCovariances();
   this->keyframe_normals.push_back(this->gicp_s2s.getSourceCovariances());
 
-  this->publish_keyframe_thread = std::thread( &dlo::OdomNode::publishKeyframe, this );
+  this->publish_keyframe_thread = std::thread(&OdomNode::publishKeyframe, this );
   this->publish_keyframe_thread.detach();
 
   ++this->num_keyframes;
@@ -526,7 +585,7 @@ void dlo::OdomNode::initializeInputTarget() {
  * Set Input Sources
  **/
 
-void dlo::OdomNode::setInputSources(){
+void OdomNode::setInputSources(){
 
   // set the input source for the S2S gicp
   // this builds the KdTree of the source cloud
@@ -547,13 +606,13 @@ void dlo::OdomNode::setInputSources(){
  * Gravity Alignment
  **/
 
-void dlo::OdomNode::gravityAlign() {
+void OdomNode::gravityAlign() {
 
   // get average acceleration vector for 1 second and normalize
   Eigen::Vector3f lin_accel = Eigen::Vector3f::Zero();
-  const double then = rclcpp::Time::now().toSec();
+  const double then = this->now().seconds();
   int n=0;
-  while ((rclcpp::Time::now().toSec() - then) < 1.) {
+  while ((this->now().seconds() - then) < 1.) {
     lin_accel[0] += this->imu_meas.lin_accel.x;
     lin_accel[1] += this->imu_meas.lin_accel.y;
     lin_accel[2] += this->imu_meas.lin_accel.z;
@@ -598,7 +657,7 @@ void dlo::OdomNode::gravityAlign() {
  * Initialize 6DOF
  **/
 
-void dlo::OdomNode::initializeDLO() {
+void OdomNode::initializeDLO() {
 
   // Calibrate IMU
   if (!this->imu_calibrated && this->imu_use_) {
@@ -641,11 +700,11 @@ void dlo::OdomNode::initializeDLO() {
  * ICP Point Cloud Callback
  **/
 
-void dlo::OdomNode::icpCB(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& pc) {
+void OdomNode::icpCB(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& pc) {
 
-  double then = rclcpp::Time::now().toSec();
+  double then = this->now().seconds();
   this->scan_stamp = pc->header.stamp;
-  this->curr_frame_stamp = pc->header.stamp.toSec();
+  this->curr_frame_stamp = rclcpp::Time(pc->header.stamp).seconds();
 
   // If there are too few points in the pointcloud, try again
   this->current_scan = pcl::PointCloud<PointType>::Ptr (new pcl::PointCloud<PointType>);
@@ -665,7 +724,7 @@ void dlo::OdomNode::icpCB(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& p
   this->preprocessPoints();
 
   // Compute Metrics
-  this->metrics_thread = std::thread( &dlo::OdomNode::computeMetrics, this );
+  this->metrics_thread = std::thread(&OdomNode::computeMetrics, this );
   this->metrics_thread.detach();
 
   // Set Adaptive Parameters
@@ -699,14 +758,14 @@ void dlo::OdomNode::icpCB(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& p
   this->prev_frame_stamp = this->curr_frame_stamp;
 
   // Update some statistics
-  this->comp_times.push_back(rclcpp::Time::now().toSec() - then);
+  this->comp_times.push_back(this->now().seconds() - then);
 
   // Publish stuff to ROS
-  this->publish_thread = std::thread( &dlo::OdomNode::publishToROS, this );
+  this->publish_thread = std::thread(&OdomNode::publishToROS, this );
   this->publish_thread.detach();
 
   // Debug statements and publish custom DLO message
-  this->debug_thread = std::thread( &dlo::OdomNode::debug, this );
+  this->debug_thread = std::thread(&OdomNode::debug, this );
   this->debug_thread.detach();
 
 }
@@ -716,7 +775,7 @@ void dlo::OdomNode::icpCB(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& p
  * IMU Callback
  **/
 
-void dlo::OdomNode::imuCB(const sensor_msgs::msg::Imu::ConstSharedPtr& imu) {
+void OdomNode::imuCB(const sensor_msgs::msg::Imu::ConstSharedPtr& imu) {
 
   if (!this->imu_use_) {
     return;
@@ -734,7 +793,7 @@ void dlo::OdomNode::imuCB(const sensor_msgs::msg::Imu::ConstSharedPtr& imu) {
   lin_accel[2] = imu->linear_acceleration.z;
 
   if (this->first_imu_time == 0.) {
-    this->first_imu_time = imu->header.stamp.toSec();
+    this->first_imu_time = rclcpp::Time(imu->header.stamp).seconds();
   }
 
   // IMU calibration procedure - do for three seconds
@@ -743,7 +802,7 @@ void dlo::OdomNode::imuCB(const sensor_msgs::msg::Imu::ConstSharedPtr& imu) {
     static int num_samples = 0;
     static bool print = true;
 
-    if ((imu->header.stamp.toSec() - this->first_imu_time) < this->imu_calib_time_) {
+    if ((rclcpp::Time(imu->header.stamp).seconds() - this->first_imu_time) < this->imu_calib_time_) {
 
       num_samples++;
 
@@ -780,7 +839,7 @@ void dlo::OdomNode::imuCB(const sensor_msgs::msg::Imu::ConstSharedPtr& imu) {
   } else {
 
     // Apply the calibrated bias to the new IMU measurements
-    this->imu_meas.stamp = imu->header.stamp.toSec();
+    this->imu_meas.stamp = rclcpp::Time(imu->header.stamp).seconds();
 
     this->imu_meas.ang_vel.x = ang_vel[0] - this->imu_bias.gyro.x;
     this->imu_meas.ang_vel.y = ang_vel[1] - this->imu_bias.gyro.y;
@@ -804,7 +863,7 @@ void dlo::OdomNode::imuCB(const sensor_msgs::msg::Imu::ConstSharedPtr& imu) {
  * Get Next Pose
  **/
 
-void dlo::OdomNode::getNextPose() {
+void OdomNode::getNextPose() {
 
   //
   // FRAME-TO-FRAME PROCEDURE
@@ -871,7 +930,7 @@ void dlo::OdomNode::getNextPose() {
  * Integrate IMU
  **/
 
-void dlo::OdomNode::integrateIMU() {
+void OdomNode::integrateIMU() {
 
   // Extract IMU data between the two frames
   std::vector<ImuMeas> imu_frame;
@@ -938,7 +997,7 @@ void dlo::OdomNode::integrateIMU() {
  * Propagate S2S Alignment
  **/
 
-void dlo::OdomNode::propagateS2S(Eigen::Matrix4f T) {
+void OdomNode::propagateS2S(Eigen::Matrix4f T) {
 
   this->T_s2s = this->T_s2s_prev * T;
   this->T_s2s_prev = this->T_s2s;
@@ -962,7 +1021,7 @@ void dlo::OdomNode::propagateS2S(Eigen::Matrix4f T) {
  * Propagate S2M Alignment
  **/
 
-void dlo::OdomNode::propagateS2M() {
+void OdomNode::propagateS2M() {
 
   this->pose   << this->T(0,3), this->T(1,3), this->T(2,3);
   this->rotSO3 << this->T(0,0), this->T(0,1), this->T(0,2),
@@ -983,7 +1042,7 @@ void dlo::OdomNode::propagateS2M() {
  * Transform Current Scan
  **/
 
-void dlo::OdomNode::transformCurrentScan() {
+void OdomNode::transformCurrentScan() {
   this->current_scan_t = pcl::PointCloud<PointType>::Ptr (new pcl::PointCloud<PointType>);
   pcl::transformPointCloud (*this->current_scan, *this->current_scan_t, this->T);
 }
@@ -993,7 +1052,7 @@ void dlo::OdomNode::transformCurrentScan() {
  * Compute Metrics
  **/
 
-void dlo::OdomNode::computeMetrics() {
+void OdomNode::computeMetrics() {
   this->computeSpaciousness();
 }
 
@@ -1002,7 +1061,7 @@ void dlo::OdomNode::computeMetrics() {
  * Compute Spaciousness of Current Scan
  **/
 
-void dlo::OdomNode::computeSpaciousness() {
+void OdomNode::computeSpaciousness() {
 
   // compute range of points
   std::vector<float> ds;
@@ -1029,7 +1088,7 @@ void dlo::OdomNode::computeSpaciousness() {
  * Convex Hull of Keyframes
  **/
 
-void dlo::OdomNode::computeConvexHull() {
+void OdomNode::computeConvexHull() {
 
   // at least 4 keyframes for convex hull
   if (this->num_keyframes < 4) {
@@ -1069,7 +1128,7 @@ void dlo::OdomNode::computeConvexHull() {
  * Concave Hull of Keyframes
  **/
 
-void dlo::OdomNode::computeConcaveHull() {
+void OdomNode::computeConcaveHull() {
 
   // at least 5 keyframes for concave hull
   if (this->num_keyframes < 5) {
@@ -1109,7 +1168,7 @@ void dlo::OdomNode::computeConcaveHull() {
  * Update keyframes
  **/
 
-void dlo::OdomNode::updateKeyframes() {
+void OdomNode::updateKeyframes() {
 
   // transform point cloud
   this->transformCurrentScan();
@@ -1188,7 +1247,7 @@ void dlo::OdomNode::updateKeyframes() {
     this->gicp_s2s.calculateSourceCovariances();
     this->keyframe_normals.push_back(this->gicp_s2s.getSourceCovariances());
 
-    this->publish_keyframe_thread = std::thread( &dlo::OdomNode::publishKeyframe, this );
+    this->publish_keyframe_thread = std::thread(&OdomNode::publishKeyframe, this );
     this->publish_keyframe_thread.detach();
 
   }
@@ -1200,7 +1259,7 @@ void dlo::OdomNode::updateKeyframes() {
  * Set Adaptive Parameters
  **/
 
-void dlo::OdomNode::setAdaptiveParams() {
+void OdomNode::setAdaptiveParams() {
 
   // Set Keyframe Thresh from Spaciousness Metric
   if (this->metrics.spaciousness.back() > 20.0){
@@ -1222,7 +1281,7 @@ void dlo::OdomNode::setAdaptiveParams() {
 /**
  * Push Submap Keyframe Indices
  **/
-void dlo::OdomNode::pushSubmapIndices(std::vector<float> dists, int k, std::vector<int> frames) {
+void OdomNode::pushSubmapIndices(std::vector<float> dists, int k, std::vector<int> frames) {
 
   // make sure dists is not empty
   if (!dists.size()) { return; }
@@ -1255,7 +1314,7 @@ void dlo::OdomNode::pushSubmapIndices(std::vector<float> dists, int k, std::vect
  * Get Submap using Nearest Neighbor Keyframes
  **/
 
-void dlo::OdomNode::getSubmapKeyframes() {
+void OdomNode::getSubmapKeyframes() {
 
   // clear vector of keyframe indices to use for submap
   this->submap_kf_idx_curr.clear();
@@ -1330,7 +1389,7 @@ void dlo::OdomNode::getSubmapKeyframes() {
     this->submap_hasChanged = true;
 
     // reinitialize submap cloud, normals
-    pcl::PointCloud<PointType>::Ptr submap_cloud_ (boost::make_shared<pcl::PointCloud<PointType>>());
+    pcl::PointCloud<PointType>::Ptr submap_cloud_ (std::make_shared<pcl::PointCloud<PointType>>());
     this->submap_normals.clear();
 
     for (auto k : this->submap_kf_idx_curr) {
@@ -1348,7 +1407,8 @@ void dlo::OdomNode::getSubmapKeyframes() {
 
 }
 
-bool dlo::OdomNode::saveTrajectory(direct_lidar_odometry::save_traj::Request& req,
+/*
+bool OdomNode::saveTrajectory(direct_lidar_odometry::save_traj::Request& req,
                                    direct_lidar_odometry::save_traj::Response& res) {
   std::string kittipath = req.save_path + "/kitti_traj.txt";
   std::ofstream out_kitti(kittipath);
@@ -1370,12 +1430,13 @@ bool dlo::OdomNode::saveTrajectory(direct_lidar_odometry::save_traj::Request& re
   res.success = true;
   return res.success;
 }
+  */
 
 /**
  * Debug Statements
  **/
 
-void dlo::OdomNode::debug() {
+void OdomNode::debug() {
 
   // Total length traversed
   double length_traversed = 0.;
@@ -1396,7 +1457,7 @@ void dlo::OdomNode::debug() {
   }
 
   if (length_traversed == 0) {
-    this->publish_keyframe_thread = std::thread( &dlo::OdomNode::publishKeyframe, this );
+    this->publish_keyframe_thread = std::thread(&OdomNode::publishKeyframe, this );
     this->publish_keyframe_thread.detach();
   }
 

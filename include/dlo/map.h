@@ -8,12 +8,17 @@
  ***********************************************************/
 
 #include "dlo/dlo.h"
+#include <pcl/io/pcd_io.h>
+#include "pcl_conversions/pcl_conversions.h"
 
-class dlo::MapNode {
+//#include <direct_lidar_odometry/srv/save_pcd.hpp>
+
+class MapNode : public rclcpp::Node
+{
 
 public:
 
-  MapNode(rclcpp::Node node_handle);
+   MapNode();
   ~MapNode();
 
   static void abort() {
@@ -25,24 +30,21 @@ public:
 
 private:
 
-  void abortTimerCB(const rclcpp::TimerEvent& e);
-  void publishTimerCB(const rclcpp::TimerEvent& e);
+  void abortTimerCB();
+  void publishTimerCB();
 
   void keyframeCB(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& keyframe);
 
-  bool savePcd(direct_lidar_odometry::save_pcd::Request& req,
-               direct_lidar_odometry::save_pcd::Response& res);
+  //bool savePcd(direct_lidar_odometry::SavePcd::Request& req,
+  //             direct_lidar_odometry::SavePcd::Response& res);
 
   void getParams();
 
-  rclcpp::Node nh;
-  rclcpp::Timer abort_timer;
-  rclcpp::Timer publish_timer;
+  rclcpp::TimerBase::SharedPtr abort_timer;
+  rclcpp::TimerBase::SharedPtr publish_timer;
 
-  ros::Subscriber keyframe_sub;
-  ros::Publisher map_pub;
-
-  ros::ServiceServer save_pcd_srv;
+  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr keyframe_sub;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_pub;
 
   pcl::PointCloud<PointType>::Ptr dlo_map;
   pcl::VoxelGrid<PointType> voxelgrid;

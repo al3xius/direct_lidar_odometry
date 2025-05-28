@@ -8,12 +8,28 @@
  ***********************************************************/
 
 #include "dlo/dlo.h"
+#include <sensor_msgs/msg/imu.hpp>
+#include "rclcpp/rclcpp.hpp"
+#include "nav_msgs/msg/odometry.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
+#include "sensor_msgs/msg/point_cloud2.hpp"
+#include "pcl_conversions/pcl_conversions.h"
+#include <pcl/filters/crop_box.h>
+#include <pcl/filters/voxel_grid.h>
+#include <pcl/io/pcd_io.h>
+#include <pcl/surface/concave_hull.h>
+#include <pcl/surface/convex_hull.h>
+#include <boost/circular_buffer.hpp>
+#include <boost/algorithm/string.hpp>
+#include <queue>
+#include <memory> 
 
-class dlo::OdomNode {
+class OdomNode : public rclcpp::Node
+{
 
 public:
 
-  OdomNode(rclcpp::Node node_handle);
+  OdomNode();
   ~OdomNode();
 
   static void abort() {
@@ -25,11 +41,11 @@ public:
 
 private:
 
-  void abortTimerCB(const rclcpp::TimerEvent& e);
+  void abortTimerCB();
   void icpCB(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& pc);
   void imuCB(const sensor_msgs::msg::Imu::ConstSharedPtr& imu);
-  bool saveTrajectory(direct_lidar_odometry::save_traj::Request& req,
-                      direct_lidar_odometry::save_traj::Response& res);
+  //bool saveTrajectory(direct_lidar_odometry::save_traj::Request& req,
+  //                    direct_lidar_odometry::save_traj::Response& res);
 
   void getParams();
 
@@ -67,18 +83,21 @@ private:
 
   double first_imu_time;
 
-  rclcpp::Node nh;
-  rclcpp::Timer abort_timer;
+  rclcpp::TimerBase::SharedPtr abort_timer;
+
   
-  ros::ServiceServer save_traj_srv;
+  //rclcpp::Service<direct_lidar_odometry::srv::SaveTraj>::SharedPtr save_traj_srv;
 
-  ros::Subscriber icp_sub;
-  ros::Subscriber imu_sub;
+  // ROS 2 Subscriptions
+  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr icp_sub;
+  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub;
 
-  ros::Publisher odom_pub;
-  ros::Publisher pose_pub;
-  ros::Publisher keyframe_pub;
-  ros::Publisher kf_pub;
+  // ROS 2 Publishers
+  rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub;
+  rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr kf_pub;
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr keyframe_pub;
+
 
   Eigen::Vector3f origin;
   std::vector<std::pair<Eigen::Vector3f, Eigen::Quaternionf>> trajectory;
@@ -87,6 +106,8 @@ private:
 
   std::atomic<bool> dlo_initialized;
   std::atomic<bool> imu_calibrated;
+
+  std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 
   std::string odom_frame;
   std::string child_frame;

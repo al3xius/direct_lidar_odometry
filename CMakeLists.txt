@@ -1,92 +1,115 @@
-#############################################################
-#                                                           #
-# Copyright (c) 2022, University of California, Los Angeles #
-#                                                           #
-# Authors: Kenny J. Chen, Brett T. Lopez                    #
-# Contact: kennyjchen@ucla.edu, btlopez@ucla.edu            #
-#                                                           #
-#############################################################
-
 cmake_minimum_required(VERSION 3.10.0)
 project(direct_lidar_odometry)
-find_package(rosidl_default_generators REQUIRED)
-find_package(ament_cmake REQUIRED)
-find_package(rclcpp REQUIRED)
-find_package(std_msgs REQUIRED)
-find_package(sensor_msgs REQUIRED)
-find_package(geometry_msgs REQUIRED)
-find_package(pcl_ros REQUIRED)
 
-find_package( PCL REQUIRED )
+# ROS 2 Humble requires C++17
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package( Eigen3 REQUIRED )
-find_package(Threads REQUIRED)
 set(CMAKE_BUILD_TYPE "Release")
-set(CMAKE_CXX_STANDARD 1 4)
-
-set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
-set(THREADS_PREFER_PTHREAD_FLAG TRUE)
-
-set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
-add_definitions(${PCL_DEFINITIONS})
-rosidl_generate_interfaces(
-    ${PROJECT_NAME}
-        srv/save_pcd.srv
-        srv/save_traj.srv
-    DEPENDENCIES
-        
-)
-include_directories(${PCL_INCLUDE_DIRS})
-include_directories(${EIGEN3_INCLUDE_DIR})
-
-include_directories(include)
-
-# NanoFLANN
-add_library(nanoflann STATIC
-  src/nano_gicp/nanoflann.cc
-)
-target_include_directories(nanoflann PUBLIC include ${PCL_INCLUDE_DIRS})
-ament_target_dependencies(nanoflann ${PCL_LIBRARIES})
-
-# NanoGICP
-add_library(nano_gicp STATIC
-  src/nano_gicp/lsq_registration.cc
-  src/nano_gicp/nano_gicp.cc
-)
-target_include_directories(nano_gicp PUBLIC include ${PCL_INCLUDE_DIRS} ${EIGEN3_INCLUDE_DIR})
-ament_target_dependencies(nano_gicp ${PCL_LIBRARIES} ${OpenMP_LIBS} nanoflann)
-
-# Odometry Node
-add_executable(dlo_odom_node src/dlo/odom_node.cc src/dlo/odom.cc)
-ament_target_dependencies(dlo_odom_node ${PCL_LIBRARIES} ${OpenMP_LIBS} Threads::Threads nano_gicp "pcl_ros" "nav_msgs" "tf2_ros" "sensor_msgs" "pcl_conversions" "geometry_msgs" "rclcpp")
-
-# Mapping Node
-add_executable (dlo_map_node src/dlo/map_node.cc src/dlo/map.cc)
-ament_target_dependencies(dlo_map_node ${PCL_LIBRARIES} ${OpenMP_LIBS} Threads::Threads "pcl_ros" "nav_msgs" "tf2_ros" "sensor_msgs" "pcl_conversions" "geometry_msgs" "rclcpp")
-ament_export_include_directories(include)
-ament_export_libraries(${PROJECT_NAME} nano_gicp nanoflann)
-
-ament_export_dependencies(rclcpp std_msgs sensor_msgs geometry_msgs pcl_ros)
-ament_package()
-
-add_compile_options(-std=c++14)
-link_directories(${PCL_LIBRARY_DIRS})
+# set(CMAKE_BUILD_TYPE "Debug")
 
 include(FindOpenMP)
 if(OPENMP_FOUND)
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
   set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
-else(OPENMP_FOUND)
-  message("ERROR: OpenMP could not be found.")
-endif(OPENMP_FOUND)
-file(WRITE ${CMAKE_BINARY_DIR}/test_cpuid.cpp "#include <cpuid.h>")
-try_compile(HAS_CPUID ${CMAKE_BINARY_DIR} ${CMAKE_BINARY_DIR}/test_cpuid.cpp)
-file(REMOVE ${CMAKE_BINARY_DIR}/test_cpuid.cpp)
-if(HAS_CPUID)
-  add_compile_definitions(HAS_CPUID)
+else()
+  message(FATAL_ERROR "OpenMP could not be found.")
 endif()
 
-target_compile_options(dlo_odom_node PRIVATE ${OpenMP_FLAGS})
+set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
+set(THREADS_PREFER_PTHREAD_FLAG TRUE)
+find_package(Threads REQUIRED)
 
-target_compile_options(dlo_map_node PRIVATE ${OpenMP_FLAGS})
+
+find_package(ament_cmake REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(rclcpp_components REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(pcl_ros REQUIRED)
+find_package(pcl_conversions REQUIRED)
+
+# 必须用 SaveTraj 这种格式，save_traj 不行
+# ros2中对自定义消息的名字有要求，首字母必须大写，中介不能有下划线等
+rosidl_generate_interfaces(${PROJECT_NAME}
+  srv/SavePcd.srv
+  srv/SaveTraj.srv
+)
+
+set(dependencies
+  rclcpp
+  rclcpp_components
+  geometry_msgs
+  sensor_msgs
+  nav_msgs
+  std_msgs
+  std_srvs
+  pcl_ros
+  pcl_conversions
+  tf2_ros 
+)
+
+find_package(Eigen3 REQUIRED)
+find_package(PCL REQUIRED COMPONENTS common io)
+
+message(Eigen: ${EIGEN3_INCLUDE_DIR})
+message(PCL: ${PCL_INCLUDE_DIRS})
+
+include_directories(
+  include
+  ${EIGEN3_INCLUDE_DIR}
+  ${PCL_INCLUDE_DIRS}
+)
+
+# NanoFLANN
+add_library(nanoflann STATIC
+  src/nano_gicp/nanoflann.cc
+)
+target_link_libraries(nanoflann ${PCL_LIBRARIES})
+#target_include_directories(nanoflann PUBLIC include ${PCL_INCLUDE_DIRS})
+target_include_directories(nanoflann PUBLIC
+  include
+  ${PCL_INCLUDE_DIRS}
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+ament_target_dependencies(nanoflann rclcpp tf2_ros sensor_msgs)
+
+# NanoGICP
+add_library(nano_gicp STATIC
+  src/nano_gicp/lsq_registration.cc
+  src/nano_gicp/nano_gicp.cc
+)
+target_link_libraries(nano_gicp ${PCL_LIBRARIES} ${OpenMP_LIBS} nanoflann)
+target_include_directories(nano_gicp PUBLIC include ${PCL_INCLUDE_DIRS} ${EIGEN3_INCLUDE_DIR})
+
+# Odometry Node
+add_executable(dlo_odom_node src/dlo/odom.cc src/dlo/odom_node.cc)
+message(PCL Libs: ${PCL_LIBRARIES})
+target_link_libraries(dlo_odom_node ${PCL_LIBRARIES} ${OpenMP_LIBS} Eigen3::Eigen Threads::Threads nano_gicp)
+ament_target_dependencies(dlo_odom_node ${dependencies})
+
+# Mapping Node
+add_executable(dlo_map_node src/dlo/map.cc src/dlo/map_node.cc)
+target_link_libraries(dlo_map_node ${PCL_LIBRARIES} ${OpenMP_LIBS} Eigen3::Eigen Threads::Threads)
+ament_target_dependencies(dlo_map_node 
+                          ${dependencies})
+
+install(TARGETS dlo_map_node DESTINATION lib/${PROJECT_NAME})
+install(TARGETS dlo_odom_node DESTINATION lib/${PROJECT_NAME})
+
+install(
+  DIRECTORY config launch
+  DESTINATION share/${PROJECT_NAME}
+)
+
+ament_export_include_directories(include)
+ament_export_libraries(${PROJECT_NAME} nano_gicp nanoflann)
+ament_export_dependencies(rosidl_default_runtime)
+ament_export_dependencies(${dependencies})
+ament_package()
