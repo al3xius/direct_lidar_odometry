@@ -18,13 +18,14 @@ std::atomic<bool> OdomNode::abort_(false);
 
 OdomNode::OdomNode() : Node("odom_node")  // Constructor of the base class rclcpp::Node
 {
-
+  RCLCPP_INFO(rclcpp::get_logger("DirectLidarOdometry"), "Starting DLO Odometry Node - Read parameters");
   this->getParams();
 
   this->abort_timer = this->create_wall_timer(
     std::chrono::milliseconds(10),
     std::bind(&OdomNode::abortTimerCB, this)
   );
+
 
   this->stop_publish_thread = false;
   this->stop_publish_keyframe_thread = false;
@@ -102,6 +103,7 @@ this->keyframe_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>("keyf
   this->imu_buffer.set_capacity(this->imu_buffer_size_);
   this->first_imu_time = 0.;
 
+
   this->original_scan = pcl::PointCloud<PointType>::Ptr (new pcl::PointCloud<PointType>);
   this->current_scan = pcl::PointCloud<PointType>::Ptr (new pcl::PointCloud<PointType>);
   this->current_scan_t = pcl::PointCloud<PointType>::Ptr (new pcl::PointCloud<PointType>);
@@ -117,10 +119,12 @@ this->keyframe_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>("keyf
   this->source_cloud = nullptr;
   this->target_cloud = nullptr;
 
+
   this->convex_hull.setDimension(3);
   this->concave_hull.setDimension(3);
   this->concave_hull.setAlpha(this->keyframe_thresh_dist_);
   this->concave_hull.setKeepInformation(true);
+
 
   this->gicp_s2s.setCorrespondenceRandomness(this->gicps2s_k_correspondences_);
   this->gicp_s2s.setMaxCorrespondenceDistance(this->gicps2s_max_corr_dist_);
@@ -153,7 +157,6 @@ this->keyframe_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>("keyf
 
   this->metrics.spaciousness.push_back(0.);
 
-  tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(shared_from_this());
 
   // CPU Specs
   char CPUBrandString[0x40];
@@ -178,13 +181,16 @@ this->keyframe_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>("keyf
   boost::trim(this->cpu_type);
 #endif
 
+
   FILE* file;
   struct tms timeSample;
   char line[128];
 
+
   this->lastCPU = times(&timeSample);
   this->lastSysCPU = timeSample.tms_stime;
   this->lastUserCPU = timeSample.tms_utime;
+
 
   file = fopen("/proc/cpuinfo", "r");
   this->numProcessors = 0;
@@ -193,7 +199,6 @@ this->keyframe_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>("keyf
   }
   fclose(file);
 
-  RCLCPP_INFO(rclcpp::get_logger("DirectLidarOdometry"), "DLO Odom Node Initialized");
 
 }
 
@@ -336,6 +341,9 @@ void OdomNode::getParams() {
  **/
 
 void OdomNode::start() {
+
+  tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(shared_from_this());
+
   RCLCPP_INFO(rclcpp::get_logger("DirectLidarOdometry"), "Starting DLO Odometry Node");
 
   printf("\033[2J\033[1;1H");
@@ -709,6 +717,8 @@ void OdomNode::icpCB(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& pc) {
   // If there are too few points in the pointcloud, try again
   this->current_scan = pcl::PointCloud<PointType>::Ptr (new pcl::PointCloud<PointType>);
   pcl::fromROSMsg(*pc, *this->current_scan);
+
+
   if (this->current_scan->points.size() < this->gicp_min_num_points_) {
     RCLCPP_WARN(rclcpp::get_logger("DirectLidarOdometry"), "Low number of points!");
     return;
@@ -716,12 +726,28 @@ void OdomNode::icpCB(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& pc) {
 
   // DLO Initialization procedures (IMU calib, gravity align)
   if (!this->dlo_initialized) {
+    std::cout << "Initializing DLO... " << std::flush;
     this->initializeDLO();
     return;
   }
 
   // Preprocess points
   this->preprocessPoints();
+
+  if (!this->current_scan) {
+    RCLCPP_ERROR(this->get_logger(), "current_scan is a nullptr. Skipping transform.");
+    return;
+  }
+
+  if (this->current_scan->empty()) {
+    RCLCPP_WARN(this->get_logger(), "current_scan is empty. Skipping transform.");
+    return;
+  }
+
+  if (!this->T.allFinite()) {
+    RCLCPP_ERROR(this->get_logger(), "Transformation matrix T contains invalid values (NaN or Inf). Skipping transform.");
+    return;
+  }
 
   // Compute Metrics
   this->metrics_thread = std::thread(&OdomNode::computeMetrics, this );
