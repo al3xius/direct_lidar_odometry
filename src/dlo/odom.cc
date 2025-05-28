@@ -16,7 +16,7 @@ std::atomic<bool> dlo::OdomNode::abort_(false);
  * Constructor
  **/
 
-dlo::OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle) {
+dlo::OdomNode::OdomNode(rclcpp::Node node_handle) : nh(node_handle) {
 
   this->getParams();
 
@@ -31,10 +31,10 @@ dlo::OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle) {
   this->icp_sub = this->nh.subscribe("pointcloud", 1, &dlo::OdomNode::icpCB, this);
   this->imu_sub = this->nh.subscribe("imu", 1, &dlo::OdomNode::imuCB, this);
 
-  this->odom_pub = this->nh.advertise<nav_msgs::Odometry>("odom", 1);
-  this->pose_pub = this->nh.advertise<geometry_msgs::PoseStamped>("pose", 1);
-  this->kf_pub = this->nh.advertise<nav_msgs::Odometry>("kfs", 1, true);
-  this->keyframe_pub = this->nh.advertise<sensor_msgs::PointCloud2>("keyframe", 1, true);
+  this->odom_pub = this->nh.advertise<nav_msgs::msg::Odometry>("odom", 1);
+  this->pose_pub = this->nh.advertise<geometry_msgs::msg::PoseStamped>("pose", 1);
+  this->kf_pub = this->nh.advertise<nav_msgs::msg::Odometry>("kfs", 1, true);
+  this->keyframe_pub = this->nh.advertise<sensor_msgs::msg::PointCloud2>("keyframe", 1, true);
   this->save_traj_srv = this->nh.advertiseService("save_traj", &dlo::OdomNode::saveTrajectory, this);
 
   this->odom.pose.pose.position.x = 0.;
@@ -173,7 +173,7 @@ dlo::OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle) {
   }
   fclose(file);
 
-  ROS_INFO("DLO Odom Node Initialized");
+  RCLCPP_INFO(rclcpp::get_logger("DirectLidarOdometry"), "DLO Odom Node Initialized");
 
 }
 
@@ -277,7 +277,7 @@ void dlo::OdomNode::getParams() {
  **/
 
 void dlo::OdomNode::start() {
-  ROS_INFO("Starting DLO Odometry Node");
+  RCLCPP_INFO(rclcpp::get_logger("DirectLidarOdometry"), "Starting DLO Odometry Node");
 
   printf("\033[2J\033[1;1H");
   std::cout << std::endl << "==== Direct LiDAR Odometry v" << this->version_ << " ====" << std::endl << std::endl;
@@ -290,7 +290,7 @@ void dlo::OdomNode::start() {
  **/
 
 void dlo::OdomNode::stop() {
-  ROS_WARN("Stopping DLO Odometry Node");
+  RCLCPP_WARN(rclcpp::get_logger("DirectLidarOdometry"), "Stopping DLO Odometry Node");
 
   this->stop_publish_thread = true;
   if (this->publish_thread.joinable()) {
@@ -320,7 +320,7 @@ void dlo::OdomNode::stop() {
  * Abort Timer Callback
  **/
 
-void dlo::OdomNode::abortTimerCB(const ros::TimerEvent& e) {
+void dlo::OdomNode::abortTimerCB(const rclcpp::TimerEvent& e) {
   if (abort_) {
     stop();
   }
@@ -397,7 +397,7 @@ void dlo::OdomNode::publishPose() {
 void dlo::OdomNode::publishTransform() {
 
   static tf2_ros::TransformBroadcaster br;
-  geometry_msgs::TransformStamped transformStamped;
+  geometry_msgs::msg::TransformStamped transformStamped;
 
   transformStamped.header.stamp = this->scan_stamp;
   transformStamped.header.frame_id = this->odom_frame;
@@ -441,7 +441,7 @@ void dlo::OdomNode::publishKeyframe() {
 
   // Publish keyframe scan
   if (this->keyframe_cloud->points.size() == this->keyframe_cloud->width * this->keyframe_cloud->height) {
-    sensor_msgs::PointCloud2 keyframe_cloud_ros;
+    sensor_msgs::msg::PointCloud2 keyframe_cloud_ros;
     pcl::toROSMsg(*this->keyframe_cloud, keyframe_cloud_ros);
     keyframe_cloud_ros.header.stamp = this->scan_stamp;
     keyframe_cloud_ros.header.frame_id = this->odom_frame;
@@ -551,9 +551,9 @@ void dlo::OdomNode::gravityAlign() {
 
   // get average acceleration vector for 1 second and normalize
   Eigen::Vector3f lin_accel = Eigen::Vector3f::Zero();
-  const double then = ros::Time::now().toSec();
+  const double then = rclcpp::Time::now().toSec();
   int n=0;
-  while ((ros::Time::now().toSec() - then) < 1.) {
+  while ((rclcpp::Time::now().toSec() - then) < 1.) {
     lin_accel[0] += this->imu_meas.lin_accel.x;
     lin_accel[1] += this->imu_meas.lin_accel.y;
     lin_accel[2] += this->imu_meas.lin_accel.z;
@@ -641,9 +641,9 @@ void dlo::OdomNode::initializeDLO() {
  * ICP Point Cloud Callback
  **/
 
-void dlo::OdomNode::icpCB(const sensor_msgs::PointCloud2ConstPtr& pc) {
+void dlo::OdomNode::icpCB(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& pc) {
 
-  double then = ros::Time::now().toSec();
+  double then = rclcpp::Time::now().toSec();
   this->scan_stamp = pc->header.stamp;
   this->curr_frame_stamp = pc->header.stamp.toSec();
 
@@ -651,7 +651,7 @@ void dlo::OdomNode::icpCB(const sensor_msgs::PointCloud2ConstPtr& pc) {
   this->current_scan = pcl::PointCloud<PointType>::Ptr (new pcl::PointCloud<PointType>);
   pcl::fromROSMsg(*pc, *this->current_scan);
   if (this->current_scan->points.size() < this->gicp_min_num_points_) {
-    ROS_WARN("Low number of points!");
+    RCLCPP_WARN(rclcpp::get_logger("DirectLidarOdometry"), "Low number of points!");
     return;
   }
 
@@ -699,7 +699,7 @@ void dlo::OdomNode::icpCB(const sensor_msgs::PointCloud2ConstPtr& pc) {
   this->prev_frame_stamp = this->curr_frame_stamp;
 
   // Update some statistics
-  this->comp_times.push_back(ros::Time::now().toSec() - then);
+  this->comp_times.push_back(rclcpp::Time::now().toSec() - then);
 
   // Publish stuff to ROS
   this->publish_thread = std::thread( &dlo::OdomNode::publishToROS, this );
@@ -716,7 +716,7 @@ void dlo::OdomNode::icpCB(const sensor_msgs::PointCloud2ConstPtr& pc) {
  * IMU Callback
  **/
 
-void dlo::OdomNode::imuCB(const sensor_msgs::Imu::ConstPtr& imu) {
+void dlo::OdomNode::imuCB(const sensor_msgs::msg::Imu::ConstSharedPtr& imu) {
 
   if (!this->imu_use_) {
     return;

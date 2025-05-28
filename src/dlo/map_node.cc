@@ -17,8 +17,9 @@ void controlC(int sig) {
 
 int main(int argc, char** argv) {
 
-  ros::init(argc, argv, "dlo_map_node");
-  ros::NodeHandle nh("~");
+  rclcpp::init(argc, argv);
+  auto node = rclcpp::Node::make_shared("dlo_map_node");
+  rclcpp::Node nh("~");
 
   signal(SIGTERM, controlC);
   sleep(0.5);

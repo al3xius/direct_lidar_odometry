@@ -13,7 +13,7 @@ class dlo::OdomNode {
 
 public:
 
-  OdomNode(ros::NodeHandle node_handle);
+  OdomNode(rclcpp::Node node_handle);
   ~OdomNode();
 
   static void abort() {
@@ -25,9 +25,9 @@ public:
 
 private:
 
-  void abortTimerCB(const ros::TimerEvent& e);
-  void icpCB(const sensor_msgs::PointCloud2ConstPtr& pc);
-  void imuCB(const sensor_msgs::Imu::ConstPtr& imu);
+  void abortTimerCB(const rclcpp::TimerEvent& e);
+  void icpCB(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& pc);
+  void imuCB(const sensor_msgs::msg::Imu::ConstSharedPtr& imu);
   bool saveTrajectory(direct_lidar_odometry::save_traj::Request& req,
                       direct_lidar_odometry::save_traj::Response& res);
 
@@ -67,8 +67,8 @@ private:
 
   double first_imu_time;
 
-  ros::NodeHandle nh;
-  ros::Timer abort_timer;
+  rclcpp::Node nh;
+  rclcpp::Timer abort_timer;
   
   ros::ServiceServer save_traj_srv;
 
@@ -114,7 +114,7 @@ private:
   pcl::PointCloud<PointType>::Ptr source_cloud;
   pcl::PointCloud<PointType>::Ptr target_cloud;
 
-  ros::Time scan_stamp;
+  rclcpp::Time scan_stamp;
 
   double curr_frame_stamp;
   double prev_frame_stamp;
@@ -127,10 +127,10 @@ private:
   pcl::VoxelGrid<PointType> vf_scan;
   pcl::VoxelGrid<PointType> vf_submap;
 
-  nav_msgs::Odometry odom;
-  nav_msgs::Odometry kf;
+  nav_msgs::msg::Odometry odom;
+  nav_msgs::msg::Odometry kf;
 
-  geometry_msgs::PoseStamped pose_ros;
+  geometry_msgs::msg::PoseStamped pose_ros;
 
   Eigen::Matrix4f T;
   Eigen::Matrix4f T_s2s, T_s2s_prev;

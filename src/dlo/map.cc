@@ -16,25 +16,25 @@ std::atomic<bool> dlo::MapNode::abort_(false);
  * Constructor
  **/
 
-dlo::MapNode::MapNode(ros::NodeHandle node_handle) : nh(node_handle) {
+dlo::MapNode::MapNode(rclcpp::Node node_handle) : nh(node_handle) {
 
   this->getParams();
 
-  this->abort_timer = this->nh.createTimer(ros::Duration(0.01), &dlo::MapNode::abortTimerCB, this);
+  this->abort_timer = this->nh.createTimer(rclcpp::Duration(0.01), &dlo::MapNode::abortTimerCB, this);
 
   if (this->publish_full_map_){
-    this->publish_timer = this->nh.createTimer(ros::Duration(this->publish_freq_), &dlo::MapNode::publishTimerCB, this);
+    this->publish_timer = this->nh.createTimer(rclcpp::Duration(this->publish_freq_), &dlo::MapNode::publishTimerCB, this);
   }
   
   this->keyframe_sub = this->nh.subscribe("keyframes", 1, &dlo::MapNode::keyframeCB, this);
-  this->map_pub = this->nh.advertise<sensor_msgs::PointCloud2>("map", 1);
+  this->map_pub = this->nh.advertise<sensor_msgs::msg::PointCloud2>("map", 1);
 
   this->save_pcd_srv = this->nh.advertiseService("save_pcd", &dlo::MapNode::savePcd, this);
 
   // initialize map
   this->dlo_map = pcl::PointCloud<PointType>::Ptr (new pcl::PointCloud<PointType>);
 
-  ROS_INFO("DLO Map Node Initialized");
+  RCLCPP_INFO(rclcpp::get_logger("DirectLidarOdometry"), "DLO Map Node Initialized");
 
 }
 
@@ -72,7 +72,7 @@ void dlo::MapNode::getParams() {
  **/
 
 void dlo::MapNode::start() {
-  ROS_INFO("Starting DLO Map Node");
+  RCLCPP_INFO(rclcpp::get_logger("DirectLidarOdometry"), "Starting DLO Map Node");
 }
 
 
@@ -81,7 +81,7 @@ void dlo::MapNode::start() {
  **/
 
 void dlo::MapNode::stop() {
-  ROS_WARN("Stopping DLO Map Node");
+  RCLCPP_WARN(rclcpp::get_logger("DirectLidarOdometry"), "Stopping DLO Map Node");
 
   // shutdown
   ros::shutdown();
@@ -92,7 +92,7 @@ void dlo::MapNode::stop() {
  * Abort Timer Callback
  **/
 
-void dlo::MapNode::abortTimerCB(const ros::TimerEvent& e) {
+void dlo::MapNode::abortTimerCB(const rclcpp::TimerEvent& e) {
   if (abort_) {
     stop();
   }
@@ -103,12 +103,12 @@ void dlo::MapNode::abortTimerCB(const ros::TimerEvent& e) {
  * Publish Timer Callback
  **/
 
-void dlo::MapNode::publishTimerCB(const ros::TimerEvent& e) {
+void dlo::MapNode::publishTimerCB(const rclcpp::TimerEvent& e) {
 
   if (this->dlo_map->points.size() == this->dlo_map->width * this->dlo_map->height) {
-    sensor_msgs::PointCloud2 map_ros;
+    sensor_msgs::msg::PointCloud2 map_ros;
     pcl::toROSMsg(*this->dlo_map, map_ros);
-    map_ros.header.stamp = ros::Time::now();
+    map_ros.header.stamp = rclcpp::Time::now();
     map_ros.header.frame_id = this->odom_frame;
     this->map_pub.publish(map_ros);
   }
@@ -120,7 +120,7 @@ void dlo::MapNode::publishTimerCB(const ros::TimerEvent& e) {
  * Node Callback
  **/
 
-void dlo::MapNode::keyframeCB(const sensor_msgs::PointCloud2ConstPtr& keyframe) {
+void dlo::MapNode::keyframeCB(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& keyframe) {
 
   // convert scan to pcl format
   pcl::PointCloud<PointType>::Ptr keyframe_pcl = pcl::PointCloud<PointType>::Ptr (new pcl::PointCloud<PointType>);
@@ -137,9 +137,9 @@ void dlo::MapNode::keyframeCB(const sensor_msgs::PointCloud2ConstPtr& keyframe) 
 
   if (!this->publish_full_map_) {
     if (keyframe_pcl->points.size() == keyframe_pcl->width * keyframe_pcl->height) {
-      sensor_msgs::PointCloud2 map_ros;
+      sensor_msgs::msg::PointCloud2 map_ros;
       pcl::toROSMsg(*keyframe_pcl, map_ros);
-      map_ros.header.stamp = ros::Time::now();
+      map_ros.header.stamp = rclcpp::Time::now();
       map_ros.header.frame_id = this->odom_frame;
       this->map_pub.publish(map_ros);
     }

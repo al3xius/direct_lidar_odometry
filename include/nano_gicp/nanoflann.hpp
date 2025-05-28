@@ -42,7 +42,7 @@
 #ifndef NANO_KDTREE_KDTREE_FLANN_H_
 #define NANO_KDTREE_KDTREE_FLANN_H_
 
-#include <boost/shared_ptr.hpp>
+#include <memory>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl/kdtree/kdtree_flann.h>
@@ -58,12 +58,12 @@ public:
 
   typedef typename pcl::PointCloud<PointT> PointCloud;
   typedef typename pcl::PointCloud<PointT>::Ptr PointCloudPtr;
-  typedef typename pcl::PointCloud<PointT>::ConstPtr PointCloudConstPtr;
+  typedef typename pcl::PointCloud<PointT>::ConstPtr PointCloud::ConstSharedPtr;
 
-  typedef boost::shared_ptr<KdTreeFLANN<PointT>> Ptr;
-  typedef boost::shared_ptr<const KdTreeFLANN<PointT>> ConstPtr;
-  typedef boost::shared_ptr<std::vector<int>> IndicesPtr;
-  typedef boost::shared_ptr<const std::vector<int>> IndicesConstPtr;
+  typedef std::shared_ptr<KdTreeFLANN<PointT>> Ptr;
+  typedef std::shared_ptr<const KdTreeFLANN<PointT>> ConstPtr;
+  typedef std::shared_ptr<std::vector<int>> IndicesPtr;
+  typedef std::shared_ptr<const std::vector<int>> IndicesConstPtr;
 
   KdTreeFLANN (bool sorted = false);
   KdTreeFLANN (const KdTreeFLANN<PointT> &k);
@@ -74,9 +74,9 @@ public:
 
   inline Ptr makeShared () { return Ptr (new KdTreeFLANN<PointT> (*this)); }
 
-  void setInputCloud (const PointCloudConstPtr &cloud, const IndicesConstPtr &indices = IndicesConstPtr ());
+  void setInputCloud (const PointCloud::ConstSharedPtr &cloud, const IndicesConstPtr &indices = IndicesConstPtr ());
 
-  inline PointCloudConstPtr getInputCloud() const { return _adaptor.pcl; }
+  inline PointCloud::ConstSharedPtr getInputCloud() const { return _adaptor.pcl; }
 
   int  nearestKSearch (const PointT &point, int k, std::vector<int> &k_indices,
                        std::vector<float> &k_sqr_distances) const;
@@ -93,7 +93,7 @@ protected:
     inline size_t kdtree_get_point_count() const;
     inline float kdtree_get_pt(const size_t idx, int dim) const;
     template <class BBOX> bool kdtree_get_bbox(BBOX&) const { return false; }
-    PointCloudConstPtr pcl;
+    PointCloud::ConstSharedPtr pcl;
     IndicesConstPtr indices;
   };
 
@@ -129,7 +129,7 @@ void KdTreeFLANN<PointT>::setSortedResults(bool sorted)
 }
 
 template<typename PointT> inline
-void KdTreeFLANN<PointT>::setInputCloud(const KdTreeFLANN::PointCloudConstPtr &cloud,
+void KdTreeFLANN<PointT>::setInputCloud(const KdTreeFLANN::PointCloud::ConstSharedPtr &cloud,
                                         const IndicesConstPtr &indices)
 {
   _adaptor.pcl = cloud;
