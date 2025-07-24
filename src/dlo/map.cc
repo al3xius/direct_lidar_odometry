@@ -66,17 +66,17 @@ MapNode::~MapNode() {}
 
 void MapNode::getParams() {
 
-  this->declare_parameter<std::string>("dlo/odomNode/odom_frame", "odom");
-  this->get_parameter("dlo/odomNode/odom_frame", this->odom_frame);
+  this->declare_parameter<std::string>("dlo.odomNode.odom_frame", "odom");
+  this->get_parameter("dlo.odomNode.odom_frame", this->odom_frame);
 
-  this->declare_parameter<bool>("dlo/mapNode/publishFullMap", true);
-  this->get_parameter("dlo/mapNode/publishFullMap", this->publish_full_map_);
+  this->declare_parameter<bool>("dlo.mapNode.publishFullMap", true);
+  this->get_parameter("dlo.mapNode.publishFullMap", this->publish_full_map_);
 
-  this->declare_parameter<double>("dlo/mapNode/publishFreq", 1.0);
-  this->get_parameter("dlo/mapNode/publishFreq", this->publish_freq_);
+  this->declare_parameter<double>("dlo.mapNode.publishFreq", 1.0);
+  this->get_parameter("dlo.mapNode.publishFreq", this->publish_freq_);
 
-  this->declare_parameter<double>("dlo/mapNode/leafSize", 0.5);
-  this->get_parameter("dlo/mapNode/leafSize", this->leaf_size_);
+  this->declare_parameter<double>("dlo.mapNode.leafSize", 0.5);
+  this->get_parameter("dlo.mapNode.leafSize", this->leaf_size_);
 
   // Get Node NS and Remove Leading Character 
   std::string ns = this->get_namespace();
